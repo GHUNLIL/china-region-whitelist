@@ -1,0 +1,33 @@
+{
+  "source": "fixture",
+  "generated_by": "test",
+  "provinces": [
+    {
+      "name": "测试省",
+      "code": "990000",
+      "file": "regions/990000.txt",
+      "url": "https://example.invalid/990000.txt",
+      "cities": [
+        {
+          "name": "甲市",
+          "code": "990100",
+          "file": "regions/990100.txt",
+          "url": "https://example.invalid/990100.txt"
+        },
+        {
+          "name": "乙市",
+          "code": "990200",
+          "file": "regions/990200.txt",
+          "url": "https://example.invalid/990200.txt"
+        }
+      ]
+    },
+    {
+      "name": "直辖市",
+      "code": "980000",
+      "file": "regions/980000.txt",
+      "url": "https://example.invalid/980000.txt",
+      "cities": []
+    }
+  ]
+}
