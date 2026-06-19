@@ -68,15 +68,43 @@ class FirewallLibTests(unittest.TestCase):
             result.stdout,
         )
 
+    def test_renders_selected_tun_forward_interface_jumps(self):
+        result = run_tool("render-apply", "--forward-iface", "tun0", "990100")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            "iptables -C FORWARD -i tun0 -j CN_REGION_WHITELIST 2>/dev/null || "
+            "iptables -I FORWARD 1 -i tun0 -j CN_REGION_WHITELIST",
+            result.stdout,
+        )
+        self.assertIn(
+            "iptables -C FORWARD -o tun0 -j CN_REGION_WHITELIST 2>/dev/null || "
+            "iptables -I FORWARD 1 -o tun0 -j CN_REGION_WHITELIST",
+            result.stdout,
+        )
+        self.assertNotIn("iptables -C FORWARD -j CN_REGION_WHITELIST", result.stdout)
+
+    def test_render_apply_can_disable_forward_management(self):
+        result = run_tool("render-apply", "--no-forward", "990100")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            "iptables -C INPUT -j CN_REGION_WHITELIST 2>/dev/null || "
+            "iptables -I INPUT 1 -j CN_REGION_WHITELIST",
+            result.stdout,
+        )
+        self.assertNotIn("iptables -C FORWARD", result.stdout)
+        self.assertNotIn("iptables -I FORWARD", result.stdout)
+
     def test_clear_removes_forward_chain_jump(self):
         result = run_tool("render-clear")
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(
-            "while iptables -C FORWARD -j CN_REGION_WHITELIST 2>/dev/null; "
-            "do iptables -D FORWARD -j CN_REGION_WHITELIST; done",
+            "iptables -S FORWARD | awk",
             result.stdout,
         )
+        self.assertIn("-j CN_REGION_WHITELIST", result.stdout)
 
     def test_show_provinces_renders_cli_table(self):
         result = run_tool("show-provinces")
@@ -133,6 +161,7 @@ class FirewallLibTests(unittest.TestCase):
         self.assertIn("--update-optional", script)
         self.assertIn("cn_save_config", script)
         self.assertIn("cn_install_systemd_service", script)
+        self.assertIn("interactive_select_forward_interfaces", script)
 
     def test_firewall_lib_configures_systemd_persistence(self):
         script = FIREWALL_LIB.read_text(encoding="utf-8")
@@ -143,6 +172,16 @@ class FirewallLibTests(unittest.TestCase):
         self.assertIn("systemctl enable", script)
         self.assertIn("restore --update-optional", script)
         self.assertIn("--output-dir", script)
+        self.assertIn("CN_FORWARD_MODE", script)
+        self.assertIn("CN_FORWARD_IFACES", script)
+
+    def test_firewall_lib_detects_and_persists_tunnel_interfaces(self):
+        script = FIREWALL_LIB.read_text(encoding="utf-8")
+
+        self.assertIn("cn_list_tunnel_interfaces()", script)
+        self.assertIn("tun*|tap*|wg*|tailscale*", script)
+        self.assertIn("--forward-iface", script)
+        self.assertIn("--no-forward", script)
 
     def test_prepare_data_can_refresh_and_force_downloads(self):
         script = (ROOT / "tools" / "prepare_data.py").read_text(encoding="utf-8")

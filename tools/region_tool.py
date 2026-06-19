@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import ipaddress
 import json
+import re
 from pathlib import Path
 
 
@@ -15,6 +16,7 @@ DEFAULT_DATA_DIR = ROOT / "data"
 SET_NAME = "cn_region_whitelist"
 CHAIN_NAME = "CN_REGION_WHITELIST"
 ENTRY_CHAINS = ("INPUT", "FORWARD")
+INTERFACE_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,64}\+?$")
 
 
 def load_metadata(regions_json: Path) -> dict:
@@ -131,7 +133,48 @@ def collect_cidrs(metadata: dict, data_dir: Path, codes: list[str]) -> list[str]
     return cidrs
 
 
-def render_apply_commands(cidrs: list[str], client_ip: str = "") -> list[str]:
+def validate_interface_name(name: str) -> str:
+    if not INTERFACE_RE.fullmatch(name):
+        raise SystemExit(f"Invalid network interface name: {name}")
+    return name
+
+
+def remove_jump_command(entry_chain: str) -> str:
+    return (
+        f"iptables -S {entry_chain} | "
+        f"awk '$0 ~ / -j {CHAIN_NAME}( |$)/ {{ sub(/^-A /, \"-D \"); print \"iptables \" $0 }}' | sh"
+    )
+
+
+def add_jump_command(entry_chain: str, args: list[str]) -> str:
+    arg_string = " ".join(args + ["-j", CHAIN_NAME])
+    return (
+        f"iptables -C {entry_chain} {arg_string} 2>/dev/null || "
+        f"iptables -I {entry_chain} 1 {arg_string}"
+    )
+
+
+def unique_interface_names(names: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for name in names:
+        validated = validate_interface_name(name)
+        if validated not in seen:
+            seen.add(validated)
+            result.append(validated)
+    return result
+
+
+def render_apply_commands(
+    cidrs: list[str],
+    client_ip: str = "",
+    forward_ifaces: list[str] | None = None,
+    no_forward: bool = False,
+) -> list[str]:
+    selected_forward_ifaces = unique_interface_names(forward_ifaces or [])
+    if no_forward and selected_forward_ifaces:
+        raise SystemExit("--no-forward cannot be used with --forward-iface")
+
     commands = [
         f"ipset create {SET_NAME} hash:net family inet -exist",
         f"ipset flush {SET_NAME}",
@@ -145,14 +188,19 @@ def render_apply_commands(cidrs: list[str], client_ip: str = "") -> list[str]:
     commands.extend(
         [
             f"iptables -N {CHAIN_NAME} 2>/dev/null || true",
+            remove_jump_command("INPUT"),
+            remove_jump_command("FORWARD"),
             f"iptables -F {CHAIN_NAME}",
         ]
     )
-    for entry_chain in ENTRY_CHAINS:
-        commands.append(
-            f"iptables -C {entry_chain} -j {CHAIN_NAME} 2>/dev/null || "
-            f"iptables -I {entry_chain} 1 -j {CHAIN_NAME}"
-        )
+    commands.append(add_jump_command("INPUT", []))
+    if not no_forward:
+        if selected_forward_ifaces:
+            for iface in selected_forward_ifaces:
+                commands.append(add_jump_command("FORWARD", ["-i", iface]))
+                commands.append(add_jump_command("FORWARD", ["-o", iface]))
+        else:
+            commands.append(add_jump_command("FORWARD", []))
     commands.extend(
         [
             f"iptables -A {CHAIN_NAME} -i lo -j ACCEPT",
@@ -165,11 +213,7 @@ def render_apply_commands(cidrs: list[str], client_ip: str = "") -> list[str]:
 
 
 def render_clear_commands() -> list[str]:
-    commands = [
-        f"while iptables -C {entry_chain} -j {CHAIN_NAME} 2>/dev/null; "
-        f"do iptables -D {entry_chain} -j {CHAIN_NAME}; done"
-        for entry_chain in ENTRY_CHAINS
-    ]
+    commands = [remove_jump_command(entry_chain) for entry_chain in ENTRY_CHAINS]
     commands.extend(
         [
             f"iptables -F {CHAIN_NAME} 2>/dev/null || true",
@@ -231,6 +275,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     render = subparsers.add_parser("render-apply")
     render.add_argument("--client-ip", default="")
+    render.add_argument(
+        "--forward-iface",
+        action="append",
+        default=[],
+        help="limit FORWARD management to packets entering or leaving this interface",
+    )
+    render.add_argument("--no-forward", action="store_true", help="do not manage FORWARD traffic")
     render.add_argument("codes", nargs="+")
 
     subparsers.add_parser("render-clear")
@@ -257,7 +308,16 @@ def main() -> int:
         print("\n".join(collect_cidrs(metadata, args.data_dir, args.codes)))
     elif args.command == "render-apply":
         cidrs = collect_cidrs(metadata, args.data_dir, args.codes)
-        print("\n".join(render_apply_commands(cidrs, args.client_ip)))
+        print(
+            "\n".join(
+                render_apply_commands(
+                    cidrs,
+                    args.client_ip,
+                    args.forward_iface,
+                    args.no_forward,
+                )
+            )
+        )
     elif args.command == "render-clear":
         print("\n".join(render_clear_commands()))
     return 0

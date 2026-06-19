@@ -10,9 +10,9 @@ usage() {
 
 用法：
   ./install.sh apply [--update|--offline|--update-optional]
-                         更新数据、交互选择地区、应用防火墙并配置开机恢复
+                         更新数据、交互选择地区和 TUN/转发接口、应用防火墙并配置开机恢复
   ./install.sh dry-run [--update|--offline|--update-optional]
-                         交互选择地区，只打印将执行的命令
+                         交互选择地区和 TUN/转发接口，只打印将执行的命令
   ./install.sh restore [--update|--offline|--update-optional]
                          使用上次保存的地区配置重新应用规则
   ./install.sh update-data
@@ -22,6 +22,7 @@ usage() {
 
 说明：
   apply 会让未命中白名单的所有入站端口全部拒绝。
+  转发流量可选择全部托管、仅托管指定 TUN/TAP/WireGuard 接口，或不托管。
   apply/dry-run 默认先同步最新上游数据；如需离线使用仓库内数据，加 --offline。
   建议先运行 dry-run，确认地区和命令后再 apply。
 EOF
@@ -114,6 +115,94 @@ interactive_select_codes() {
   done < <(split_user_list "${province_input}")
 }
 
+append_unique_forward_iface() {
+  local candidate="$1"
+  local existing
+  for existing in "${SELECTED_FORWARD_IFACES[@]}"; do
+    [[ "${existing}" == "${candidate}" ]] && return 0
+  done
+  SELECTED_FORWARD_IFACES+=("${candidate}")
+}
+
+interactive_select_forward_interfaces() {
+  SELECTED_FORWARD_MODE="all"
+  SELECTED_FORWARD_IFACES=()
+
+  local -a tunnel_ifaces=()
+  local iface
+  while IFS= read -r iface; do
+    [[ -n "${iface}" ]] && tunnel_ifaces+=("${iface}")
+  done < <(cn_list_tunnel_interfaces)
+
+  local input item index ok
+  while true; do
+    echo >&2
+    echo "请选择 TUN/转发接口托管方式：" >&2
+    echo "0. 不托管 FORWARD 转发，只限制服务器本机入站端口" >&2
+    echo "1. 托管所有 FORWARD 转发流量（默认，兼容旧版本）" >&2
+
+    index=2
+    if [[ "${#tunnel_ifaces[@]}" -gt 0 ]]; then
+      echo "检测到的 TUN/TAP/WireGuard 类接口：" >&2
+      for iface in "${tunnel_ifaces[@]}"; do
+        printf '%d. %s\n' "${index}" "${iface}" >&2
+        index=$((index + 1))
+      done
+    else
+      echo "未自动检测到 TUN/TAP/WireGuard 类接口。" >&2
+    fi
+    echo "也可以直接输入接口名，多个用空格/逗号分隔，例如：tun0 wg0 tailscale0" >&2
+
+    input="$(read_from_tty "转发接口 [1]: ")"
+    input="${input:-1}"
+
+    if [[ "${input}" == "0" ]]; then
+      SELECTED_FORWARD_MODE="none"
+      SELECTED_FORWARD_IFACES=()
+      return
+    fi
+    if [[ "${input}" == "1" ]]; then
+      SELECTED_FORWARD_MODE="all"
+      SELECTED_FORWARD_IFACES=()
+      return
+    fi
+
+    SELECTED_FORWARD_MODE="selected"
+    SELECTED_FORWARD_IFACES=()
+    ok=1
+    while IFS= read -r item; do
+      [[ -n "${item}" ]] || continue
+      if [[ "${item}" =~ ^[0-9]+$ ]]; then
+        if (( item >= 2 && item < 2 + ${#tunnel_ifaces[@]} )); then
+          append_unique_forward_iface "${tunnel_ifaces[$((item - 2))]}"
+        else
+          ok=0
+        fi
+      elif cn_validate_interface_name "${item}"; then
+        append_unique_forward_iface "${item}"
+      else
+        ok=0
+      fi
+    done < <(split_user_list "${input}")
+
+    if [[ "${ok}" -eq 1 && "${#SELECTED_FORWARD_IFACES[@]}" -gt 0 ]]; then
+      return
+    fi
+    echo "输入无效：请输入 0、1、接口编号，或合法接口名；多个接口可用空格/逗号分隔。" >&2
+  done
+}
+
+describe_forward_selection() {
+  local mode="$1"
+  local ifaces="$2"
+  case "${mode}" in
+    all) echo "转发托管：所有 FORWARD 流量" ;;
+    none) echo "转发托管：关闭，仅限制本机入站端口" ;;
+    selected) echo "转发托管：指定接口 ${ifaces}（匹配入/出方向）" ;;
+    *) echo "转发托管：未知模式 ${mode}" ;;
+  esac
+}
+
 confirm_client_ip() {
   local client_ip="$1"
   if [[ -z "${client_ip}" ]]; then
@@ -173,6 +262,8 @@ run_apply_or_dry_run() {
   local dry_run="$1"
   local update_mode="$2"
   local -a selected_codes
+  local -a selected_forward_ifaces
+  local selected_forward_mode
   prepare_data_for_mode "${update_mode}"
   interactive_select_codes
   selected_codes=("${SELECTED_CODES[@]}")
@@ -180,16 +271,20 @@ run_apply_or_dry_run() {
     echo "未选择任何地区。" >&2
     exit 1
   fi
+  interactive_select_forward_interfaces
+  selected_forward_mode="${SELECTED_FORWARD_MODE}"
+  selected_forward_ifaces=("${SELECTED_FORWARD_IFACES[@]}")
 
   local client_ip
   client_ip="$(confirm_client_ip "$(cn_detect_ssh_client_ip)")"
 
   echo
   echo "将使用以下地区代码：${selected_codes[*]}"
+  describe_forward_selection "${selected_forward_mode}" "${selected_forward_ifaces[*]}"
   echo
 
   if [[ "${dry_run}" == "1" ]]; then
-    cn_render_apply_commands "${client_ip}" "${selected_codes[@]}"
+    cn_render_apply_commands "${client_ip}" "${selected_forward_mode}" "${selected_forward_ifaces[*]}" "${selected_codes[@]}"
     return
   fi
 
@@ -201,8 +296,8 @@ run_apply_or_dry_run() {
     echo "已取消。"
     exit 0
   fi
-  cn_render_apply_commands "${client_ip}" "${selected_codes[@]}" | cn_run_rendered_commands
-  cn_save_config "${selected_codes[@]}"
+  cn_render_apply_commands "${client_ip}" "${selected_forward_mode}" "${selected_forward_ifaces[*]}" "${selected_codes[@]}" | cn_run_rendered_commands
+  cn_save_config "${selected_forward_mode}" "${selected_forward_ifaces[*]}" "${selected_codes[@]}"
   cn_install_systemd_service
   echo "规则已应用。"
   echo "已保存地区配置，重启后会由 ${CN_SERVICE_NAME} 自动恢复。"
@@ -211,6 +306,8 @@ run_apply_or_dry_run() {
 restore_rules() {
   local update_mode="$1"
   local -a saved_codes
+  local -a saved_forward_ifaces
+  local saved_forward_mode
   cn_require_root
   cn_require_commands
   prepare_data_for_mode "${update_mode}"
@@ -225,8 +322,15 @@ restore_rules() {
     exit 1
   fi
 
-  cn_render_apply_commands "" "${saved_codes[@]}" | cn_run_rendered_commands
+  saved_forward_mode="$(cn_load_config_forward_mode)"
+  saved_forward_ifaces=()
+  while IFS= read -r iface; do
+    [[ -n "${iface}" ]] && saved_forward_ifaces+=("${iface}")
+  done < <(cn_load_config_forward_ifaces)
+
+  cn_render_apply_commands "" "${saved_forward_mode}" "${saved_forward_ifaces[*]}" "${saved_codes[@]}" | cn_run_rendered_commands
   echo "已按保存配置恢复规则：${saved_codes[*]}"
+  describe_forward_selection "${saved_forward_mode}" "${saved_forward_ifaces[*]}"
 }
 
 status_rules() {
