@@ -11,6 +11,9 @@ CN_CONFIG_FILE="${CN_CONFIG_FILE:-/etc/china-region-whitelist.conf}"
 CN_SERVICE_NAME="china-region-whitelist.service"
 CN_CHAIN_NAME="CN_REGION_WHITELIST"
 CN_SET_NAME="cn_region_whitelist"
+CN_GITHUB_PROXY="${CN_GITHUB_PROXY:-https://gh-proxy.com/}"
+CN_UPSTREAM_INDEX_URL="https://raw.githubusercontent.com/metowolf/iplist/master/docs/cncity.md"
+CN_UPSTREAM_DATA_BASE_URL="https://raw.githubusercontent.com/metowolf/iplist/master/data/cncity"
 
 cn_python() {
   if command -v python3 >/dev/null 2>&1; then
@@ -33,6 +36,22 @@ cn_set_data_dir() {
   DATA_DIR="${output_dir}/data"
 }
 
+cn_github_proxy_url() {
+  local raw_url="$1"
+  local proxy="${CN_GITHUB_PROXY}"
+  case "${proxy}" in
+    ""|direct|none)
+      printf '%s\n' "${raw_url}"
+      ;;
+    */)
+      printf '%s%s\n' "${proxy}" "${raw_url}"
+      ;;
+    *)
+      printf '%s/%s\n' "${proxy}" "${raw_url}"
+      ;;
+  esac
+}
+
 cn_use_runtime_data_if_available() {
   if [[ -s "${CN_RUNTIME_DIR}/data/regions.json" && -d "${CN_RUNTIME_DIR}/data/regions" ]]; then
     cn_set_data_dir "${CN_RUNTIME_DIR}"
@@ -47,12 +66,16 @@ cn_update_runtime_data() {
   args=(--output-dir "${CN_RUNTIME_DIR}" --refresh-index --force)
   if [[ -n "${CN_INDEX_URL:-}" ]]; then
     args+=(--index-url "${CN_INDEX_URL}")
+  else
+    args+=(--index-url "$(cn_github_proxy_url "${CN_UPSTREAM_INDEX_URL}")")
   fi
   if [[ -n "${CN_DATA_BASE_URL:-}" ]]; then
     args+=(--data-base-url "${CN_DATA_BASE_URL}")
+  else
+    args+=(--data-base-url "$(cn_github_proxy_url "${CN_UPSTREAM_DATA_BASE_URL}")")
   fi
 
-  echo "正在同步最新地区 CIDR 数据..." >&2
+  echo "正在同步最新地区 CIDR 数据（默认通过 GitHub 代理，可设置 CN_GITHUB_PROXY=direct 直连）..." >&2
   cn_python "${CN_PREPARE_DATA}" "${args[@]}"
   cn_set_data_dir "${CN_RUNTIME_DIR}"
 }

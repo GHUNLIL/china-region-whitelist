@@ -9,6 +9,7 @@ FIXTURES = ROOT / "tests" / "fixtures"
 TOOL = ROOT / "tools" / "region_tool.py"
 INSTALL_SH = ROOT / "install.sh"
 FIREWALL_LIB = ROOT / "tools" / "firewall_lib.sh"
+BOOTSTRAP_SH = ROOT / "bootstrap.sh"
 
 
 def run_tool(*args: str) -> subprocess.CompletedProcess[str]:
@@ -174,6 +175,17 @@ class FirewallLibTests(unittest.TestCase):
         self.assertIn("--output-dir", script)
         self.assertIn("CN_FORWARD_MODE", script)
         self.assertIn("CN_FORWARD_IFACES", script)
+
+    def test_default_downloads_use_github_proxy(self):
+        firewall_lib = FIREWALL_LIB.read_text(encoding="utf-8")
+        bootstrap = BOOTSTRAP_SH.read_text(encoding="utf-8")
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+        self.assertIn("CN_GITHUB_PROXY=\"${CN_GITHUB_PROXY:-https://gh-proxy.com/}\"", firewall_lib)
+        self.assertIn("cn_github_proxy_url", firewall_lib)
+        self.assertIn("CN_GITHUB_PROXY:-https://gh-proxy.com/", bootstrap)
+        self.assertIn("https://gh-proxy.com/https://raw.githubusercontent.com", readme)
+        self.assertIn("bash <(curl -fsSL", readme)
 
     def test_firewall_lib_detects_and_persists_tunnel_interfaces(self):
         script = FIREWALL_LIB.read_text(encoding="utf-8")

@@ -4,8 +4,11 @@
 
 仓库会通过 GitHub Actions 每小时同步一次上游 CIDR 数据。服务器运行 `apply` 或 `dry-run` 时，默认还会在本机再同步一次上游数据到 `/var/lib/china-region-whitelist`，确保配置时使用的是当时可获取到的最新数据。
 
+默认入口面向中国大陆服务器：一行 `bash <(curl ...)` 通过 GitHub 代理下载完整项目，运行时同步上游 IP 数据也默认走同一个代理。
+
 ## 项目结构
 
+- `bootstrap.sh`：默认的一键拉取入口，会下载完整项目并执行 `install.sh`
 - `install.sh`：服务器上运行的一键脚本
 - `data/regions.json`：省市索引
 - `data/regions/*.txt`：本地 CIDR 段
@@ -15,22 +18,31 @@
 
 ## 使用
 
-在服务器上拉取后进入目录：
+推荐在大陆服务器上直接运行：
 
 ```bash
-git clone https://github.com/GHUNLIL/china-region-whitelist.git
-cd china-region-whitelist
+bash <(curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/GHUNLIL/china-region-whitelist/main/bootstrap.sh)
 ```
 
 建议先预览将要执行的规则：
 
 ```bash
-sudo bash install.sh dry-run
+bash <(curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/GHUNLIL/china-region-whitelist/main/bootstrap.sh) dry-run
 ```
 
 确认无误后正式运行：
 
 ```bash
+bash <(curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/GHUNLIL/china-region-whitelist/main/bootstrap.sh) apply
+```
+
+`bootstrap.sh` 会把项目安装或更新到 `/opt/china-region-whitelist`，然后用 root 权限执行真正的 `install.sh`。如果当前不是 root，会自动调用 `sudo`。
+
+如需手动方式，也可以克隆仓库后运行：
+
+```bash
+git clone https://github.com/GHUNLIL/china-region-whitelist.git
+cd china-region-whitelist
 sudo bash install.sh apply
 ```
 
@@ -50,25 +62,25 @@ sudo bash install.sh apply
 只同步最新数据、不改防火墙：
 
 ```bash
-sudo bash install.sh update-data
+bash <(curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/GHUNLIL/china-region-whitelist/main/bootstrap.sh) update-data
 ```
 
 离线使用仓库内置数据：
 
 ```bash
-sudo bash install.sh apply --offline
+bash <(curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/GHUNLIL/china-region-whitelist/main/bootstrap.sh) apply --offline
 ```
 
 查看状态：
 
 ```bash
-sudo bash install.sh status
+bash <(curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/GHUNLIL/china-region-whitelist/main/bootstrap.sh) status
 ```
 
 清除规则：
 
 ```bash
-sudo bash install.sh clear
+bash <(curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/GHUNLIL/china-region-whitelist/main/bootstrap.sh) clear
 ```
 
 ## 本地验证
@@ -84,10 +96,17 @@ bash -n install.sh tools/firewall_lib.sh
 
 地区 CIDR 数据来自 `metowolf/iplist`。默认模式会访问上游数据源；如果服务器无法访问上游，可以先 `git pull` 获取仓库定时同步的数据，再用 `--offline` 配置。若服务器缺少 `iptables` 或 `ipset`，脚本会尝试使用系统默认软件源安装依赖；这一步可能访问发行版软件源。
 
-如果你的服务器访问默认上游较慢，可以用环境变量指定镜像：
+默认 GitHub 访问会经过 `https://gh-proxy.com/`。如果需要换代理或直连：
 
 ```bash
-sudo CN_DATA_BASE_URL=https://your-mirror.example/iplist/data/cncity bash install.sh apply
+CN_GITHUB_PROXY=https://your-proxy.example/ bash <(curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/GHUNLIL/china-region-whitelist/main/bootstrap.sh) apply
+CN_GITHUB_PROXY=direct bash <(curl -fsSL https://raw.githubusercontent.com/GHUNLIL/china-region-whitelist/main/bootstrap.sh) apply
+```
+
+也可以只覆盖上游 IP 数据源：
+
+```bash
+sudo CN_DATA_BASE_URL=https://your-mirror.example/iplist/data/cncity bash /opt/china-region-whitelist/install.sh apply
 ```
 
 ## 重新准备本地数据
