@@ -25,6 +25,16 @@ def run_tool(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(command, text=True, capture_output=True, check=False)
 
 
+def run_firewall_lib(command: str) -> subprocess.CompletedProcess[str]:
+    script = (
+        f"source {FIREWALL_LIB}; "
+        f"DATA_DIR={FIXTURES}; "
+        f"CN_REGIONS_TSV={FIXTURES / 'regions.tsv'}; "
+        f"{command}"
+    )
+    return subprocess.run(["bash", "-c", script], text=True, capture_output=True, check=False)
+
+
 class FirewallLibTests(unittest.TestCase):
     def test_lists_provinces_with_indices(self):
         result = run_tool("list-provinces")
@@ -126,6 +136,37 @@ class FirewallLibTests(unittest.TestCase):
         self.assertIn("乙市", result.stdout)
         self.assertNotIn("990100", result.stdout)
 
+    def test_firewall_lib_lists_regions_without_python_runtime(self):
+        provinces = run_firewall_lib("cn_show_provinces")
+        cities = run_firewall_lib("cn_show_cities 测试省")
+
+        self.assertEqual(provinces.returncode, 0, provinces.stderr)
+        self.assertIn("1.测试省", provinces.stdout)
+        self.assertIn("2.直辖市", provinces.stdout)
+        self.assertEqual(cities.returncode, 0, cities.stderr)
+        self.assertIn("测试省 可选城市", cities.stdout)
+        self.assertIn("0.全省", cities.stdout)
+        self.assertIn("1.甲市", cities.stdout)
+        self.assertIn("2.乙市", cities.stdout)
+
+    def test_firewall_lib_renders_rules_without_python_runtime(self):
+        result = run_firewall_lib(
+            "cn_render_apply_commands 198.51.100.88 selected tun0 990100"
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("ipset create cn_region_whitelist hash:net family inet -exist", result.stdout)
+        self.assertIn("ipset add cn_region_whitelist 10.0.0.0/8 -exist", result.stdout)
+        self.assertIn("ipset add cn_region_whitelist 198.51.100.88 -exist", result.stdout)
+        self.assertIn("iptables -C FORWARD -i tun0 -j CN_REGION_WHITELIST", result.stdout)
+        self.assertIn("iptables -C FORWARD -o tun0 -j CN_REGION_WHITELIST", result.stdout)
+
+    def test_firewall_lib_rejects_unknown_region_code(self):
+        result = run_firewall_lib("cn_render_apply_commands '' all '' 123456")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("未知地区代码", result.stderr)
+
     def test_resolves_province_and_city_names_to_codes(self):
         province = run_tool("resolve-province", "测试省")
         city = run_tool("resolve-city", "测试省", "甲市")
@@ -154,16 +195,14 @@ class FirewallLibTests(unittest.TestCase):
         self.assertIn("zypper --non-interactive install iptables ipset", script)
         self.assertIn("cn_install_dependencies", script)
 
-    def test_firewall_lib_auto_installs_missing_python3(self):
+    def test_firewall_lib_runtime_does_not_auto_install_python3(self):
         script = FIREWALL_LIB.read_text(encoding="utf-8")
 
-        self.assertIn("cn_install_python()", script)
-        self.assertIn("apt-get install -y python3", script)
-        self.assertIn("dnf install -y python3", script)
-        self.assertIn("yum install -y python3", script)
-        self.assertIn("apk add --no-cache python3", script)
-        self.assertIn("zypper --non-interactive install python3", script)
-        self.assertIn("elif [[ \"${EUID}\" -eq 0 ]] && cn_install_python", script)
+        self.assertNotIn("cn_install_python()", script)
+        self.assertNotIn("apt-get install -y python3", script)
+        self.assertIn("CN_REGIONS_TSV", script)
+        self.assertIn("cn_python_for_update", script)
+        self.assertIn("默认运行不需要 Python", script)
 
     def test_install_script_supports_update_and_restore_modes(self):
         script = INSTALL_SH.read_text(encoding="utf-8")
@@ -171,6 +210,7 @@ class FirewallLibTests(unittest.TestCase):
         self.assertIn("update-data", script)
         self.assertIn("restore", script)
         self.assertIn("--update-optional", script)
+        self.assertIn("parse_update_mode offline \"$@\"", script)
         self.assertIn("cn_save_config", script)
         self.assertIn("cn_install_systemd_service", script)
         self.assertIn("interactive_select_forward_interfaces", script)
@@ -182,7 +222,7 @@ class FirewallLibTests(unittest.TestCase):
         self.assertIn("CN_RUNTIME_DIR", script)
         self.assertIn("china-region-whitelist.service", script)
         self.assertIn("systemctl enable", script)
-        self.assertIn("restore --update-optional", script)
+        self.assertIn("restore --offline", script)
         self.assertIn("--output-dir", script)
         self.assertIn("CN_FORWARD_MODE", script)
         self.assertIn("CN_FORWARD_IFACES", script)
@@ -221,6 +261,7 @@ class FirewallLibTests(unittest.TestCase):
         self.assertIn("--force", script)
         self.assertIn("DEFAULT_INDEX_URL", script)
         self.assertIn("DEFAULT_DATA_BASE_URL", script)
+        self.assertIn("write_regions_tsv", script)
 
 
 if __name__ == "__main__":

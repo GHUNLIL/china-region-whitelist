@@ -94,6 +94,43 @@ def iter_entries(provinces: list[dict[str, object]]):
             yield city
 
 
+def write_regions_tsv(provinces: list[dict[str, object]], target: Path) -> None:
+    lines: list[str] = []
+    for province_index, province in enumerate(provinces, 1):
+        province_code = str(province["code"])
+        province_name = str(province["name"])
+        lines.append(
+            "\t".join(
+                [
+                    "province",
+                    str(province_index),
+                    "0",
+                    province_code,
+                    province_name,
+                    province_code,
+                    province_name,
+                    str(province["file"]),
+                ]
+            )
+        )
+        for city_index, city in enumerate(province["cities"], 1):  # type: ignore[index]
+            lines.append(
+                "\t".join(
+                    [
+                        "city",
+                        str(province_index),
+                        str(city_index),
+                        province_code,
+                        province_name,
+                        str(city["code"]),
+                        str(city["name"]),
+                        str(city["file"]),
+                    ]
+                )
+            )
+    target.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--index", type=Path, default=DEFAULT_INDEX, help="Local cncity.md path")
@@ -114,6 +151,7 @@ def main() -> int:
     data_dir = output_dir / "data"
     regions_dir = data_dir / "regions"
     regions_json = data_dir / "regions.json"
+    regions_tsv = data_dir / "regions.tsv"
     vendor_dir = output_dir / "vendor"
 
     if args.refresh_index:
@@ -148,6 +186,7 @@ def main() -> int:
     }
     data_dir.mkdir(parents=True, exist_ok=True)
     regions_json.write_text(json.dumps(metadata, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    write_regions_tsv(provinces, regions_tsv)
 
     if args.ipdb:
         if not args.ipdb.exists():
@@ -156,6 +195,7 @@ def main() -> int:
         shutil.copy2(args.ipdb, vendor_dir / "ipipfree.ipdb")
 
     print(f"Wrote {regions_json}")
+    print(f"Wrote {regions_tsv}")
     print(f"Province count: {len(provinces)}")
     print(f"Indexed region files: {sum(1 for _ in iter_entries(provinces))}")
     return 0

@@ -2,10 +2,10 @@
 set -euo pipefail
 
 CN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CN_REGION_TOOL="${CN_ROOT}/tools/region_tool.py"
 CN_PREPARE_DATA="${CN_ROOT}/tools/prepare_data.py"
 REGIONS_JSON="${REGIONS_JSON:-${CN_ROOT}/data/regions.json}"
 DATA_DIR="${DATA_DIR:-${CN_ROOT}/data}"
+CN_REGIONS_TSV="${CN_REGIONS_TSV:-${DATA_DIR}/regions.tsv}"
 CN_RUNTIME_DIR="${CN_RUNTIME_DIR:-/var/lib/china-region-whitelist}"
 CN_CONFIG_FILE="${CN_CONFIG_FILE:-/etc/china-region-whitelist.conf}"
 CN_SERVICE_NAME="china-region-whitelist.service"
@@ -15,27 +15,22 @@ CN_GITHUB_PROXY="${CN_GITHUB_PROXY:-https://gh-proxy.com/}"
 CN_UPSTREAM_INDEX_URL="https://raw.githubusercontent.com/metowolf/iplist/master/docs/cncity.md"
 CN_UPSTREAM_DATA_BASE_URL="https://raw.githubusercontent.com/metowolf/iplist/master/data/cncity"
 
-cn_python() {
+cn_python_for_update() {
   if command -v python3 >/dev/null 2>&1; then
     python3 "$@"
   elif command -v python >/dev/null 2>&1; then
     python "$@"
-  elif [[ "${EUID}" -eq 0 ]] && cn_install_python; then
-    python3 "$@"
   else
-    echo "未找到 python3/python，无法读取本地地区数据。" >&2
+    echo "实时同步上游数据需要 python3/python；默认运行不需要 Python，可使用仓库内置数据继续。" >&2
     return 127
   fi
-}
-
-cn_region_tool() {
-  cn_python "${CN_REGION_TOOL}" --regions-json "${REGIONS_JSON}" --data-dir "${DATA_DIR}" "$@"
 }
 
 cn_set_data_dir() {
   local output_dir="$1"
   REGIONS_JSON="${output_dir}/data/regions.json"
   DATA_DIR="${output_dir}/data"
+  CN_REGIONS_TSV="${DATA_DIR}/regions.tsv"
 }
 
 cn_github_proxy_url() {
@@ -77,37 +72,186 @@ cn_update_runtime_data() {
     args+=(--data-base-url "$(cn_github_proxy_url "${CN_UPSTREAM_DATA_BASE_URL}")")
   fi
 
-  echo "正在同步最新地区 CIDR 数据（默认通过 GitHub 代理，可设置 CN_GITHUB_PROXY=direct 直连）..." >&2
-  cn_python "${CN_PREPARE_DATA}" "${args[@]}"
+  echo "正在同步最新地区 CIDR 数据（需要 python3；默认安装流程不需要同步）..." >&2
+  cn_python_for_update "${CN_PREPARE_DATA}" "${args[@]}"
   cn_set_data_dir "${CN_RUNTIME_DIR}"
 }
 
+cn_require_region_index() {
+  if [[ ! -r "${CN_REGIONS_TSV}" ]]; then
+    echo "缺少地区索引：${CN_REGIONS_TSV}" >&2
+    echo "请重新拉取最新仓库，或在有 Python 的机器上运行 tools/prepare_data.py 生成 data/regions.tsv。" >&2
+    return 1
+  fi
+}
+
+cn_normalize_region_name() {
+  local name="$1"
+  local suffix
+  name="${name#"${name%%[![:space:]]*}"}"
+  name="${name%"${name##*[![:space:]]}"}"
+  for suffix in 特别行政区 维吾尔自治区 壮族自治区 回族自治区 自治区 省 市 地区 盟; do
+    if [[ "${name}" == *"${suffix}" ]]; then
+      printf '%s\n' "${name%"${suffix}"}"
+      return
+    fi
+  done
+  printf '%s\n' "${name}"
+}
+
 cn_list_provinces() {
-  cn_region_tool list-provinces
+  cn_require_region_index
+  awk -F '\t' '$1 == "province" {print $2 "\t" $6 "\t" $7}' "${CN_REGIONS_TSV}"
 }
 
 cn_list_cities() {
-  cn_region_tool list-cities "$1"
+  local province_code="$1"
+  cn_require_region_index
+  awk -F '\t' -v province_code="${province_code}" \
+    '$1 == "city" && $4 == province_code {print $3 "\t" $6 "\t" $7}' \
+    "${CN_REGIONS_TSV}"
 }
 
 cn_show_provinces() {
-  cn_region_tool show-provinces
+  echo "可选省份："
+  cn_list_provinces | awk -F '\t' '{print $1 "." $3}'
 }
 
 cn_show_cities() {
-  cn_region_tool show-cities "$1"
+  local province_code province_name city_count
+  province_code="$(cn_resolve_province "$1")"
+  province_name="$(cn_province_name "${province_code}")"
+  echo "${province_name} 可选城市："
+  if [[ "${province_name}" == *市 ]]; then
+    echo "0.全市"
+  else
+    echo "0.全省"
+  fi
+
+  city_count=0
+  while IFS=$'\t' read -r index _code name; do
+    [[ -n "${index}" ]] || continue
+    printf '%s.%s\n' "${index}" "${name}"
+    city_count=$((city_count + 1))
+  done < <(cn_list_cities "${province_code}")
+  if [[ "${city_count}" -eq 0 ]]; then
+    echo "   该地区暂无市级细分，请选择全省。"
+  fi
 }
 
 cn_resolve_province() {
-  cn_region_tool resolve-province "$1"
+  local selector="$1"
+  local selector_norm code=""
+  local match_count=0
+  selector="${selector#"${selector%%[![:space:]]*}"}"
+  selector="${selector%"${selector##*[![:space:]]}"}"
+  selector_norm="$(cn_normalize_region_name "${selector}")"
+
+  local index province_code name
+  while IFS=$'\t' read -r index province_code name; do
+    if [[ "${selector}" == "${index}" || "${selector}" == "${province_code}" || "${selector}" == "${name}" || "${selector_norm}" == "$(cn_normalize_region_name "${name}")" ]]; then
+      code="${province_code}"
+      match_count=$((match_count + 1))
+    fi
+  done < <(cn_list_provinces)
+
+  if [[ "${match_count}" -eq 1 ]]; then
+    printf '%s\n' "${code}"
+    return
+  fi
+  if [[ "${match_count}" -eq 0 ]]; then
+    echo "未找到省份：${selector}" >&2
+  else
+    echo "省份名称不唯一：${selector}" >&2
+  fi
+  return 1
 }
 
 cn_resolve_city() {
-  cn_region_tool resolve-city "$1" "$2"
+  local province_selector="$1"
+  local city_selector="$2"
+  local province_code city_selector_norm code=""
+  local match_count=0
+  province_code="$(cn_resolve_province "${province_selector}")"
+  city_selector="${city_selector#"${city_selector%%[![:space:]]*}"}"
+  city_selector="${city_selector%"${city_selector##*[![:space:]]}"}"
+  city_selector_norm="$(cn_normalize_region_name "${city_selector}")"
+
+  local index city_code name
+  while IFS=$'\t' read -r index city_code name; do
+    if [[ "${city_selector}" == "${index}" || "${city_selector}" == "${city_code}" || "${city_selector}" == "${name}" || "${city_selector_norm}" == "$(cn_normalize_region_name "${name}")" ]]; then
+      code="${city_code}"
+      match_count=$((match_count + 1))
+    fi
+  done < <(cn_list_cities "${province_code}")
+
+  if [[ "${match_count}" -eq 1 ]]; then
+    printf '%s\n' "${code}"
+    return
+  fi
+  if [[ "${match_count}" -eq 0 ]]; then
+    echo "在 $(cn_province_name "${province_code}") 中未找到城市：${city_selector}" >&2
+  else
+    echo "城市名称不唯一：${city_selector}" >&2
+  fi
+  return 1
 }
 
 cn_collect_cidrs() {
-  cn_region_tool collect-cidrs "$@"
+  local code region_file full_path
+  for code in "$@"; do
+    region_file="$(cn_region_file_for_code "${code}")" || return 1
+    full_path="${DATA_DIR}/${region_file}"
+    if [[ ! -r "${full_path}" ]]; then
+      echo "缺少地区 CIDR 文件：${full_path}" >&2
+      return 1
+    fi
+    sed 's/[[:space:]]*$//' "${full_path}" | awk 'NF && $0 !~ /^#/'
+  done | awk '!seen[$0]++'
+}
+
+cn_province_name() {
+  local code="$1"
+  cn_require_region_index
+  awk -F '\t' -v code="${code}" '$1 == "province" && $6 == code {print $7; exit}' "${CN_REGIONS_TSV}"
+}
+
+cn_region_file_for_code() {
+  local code="$1"
+  if ! [[ "${code}" =~ ^[0-9]{6}$ ]]; then
+    echo "非法地区代码：${code}" >&2
+    return 1
+  fi
+  cn_require_region_index
+  local file
+  file="$(awk -F '\t' -v code="${code}" '$6 == code {print $8; exit}' "${CN_REGIONS_TSV}")"
+  if [[ -z "${file}" ]]; then
+    echo "未知地区代码：${code}" >&2
+    return 1
+  fi
+  printf '%s\n' "${file}"
+}
+
+cn_remove_jump_command() {
+  local entry_chain="$1"
+  printf "iptables -S %s | awk '\$0 ~ / -j %s( |\$)/ { sub(/^-A /, \"-D \"); print \"iptables \" \$0 }' | sh\n" \
+    "${entry_chain}" "${CN_CHAIN_NAME}"
+}
+
+cn_add_jump_command() {
+  local entry_chain="$1"
+  shift || true
+  local arg_string=""
+  if [[ "$#" -gt 0 ]]; then
+    arg_string="$* "
+  fi
+  printf 'iptables -C %s %s-j %s 2>/dev/null || iptables -I %s 1 %s-j %s\n' \
+    "${entry_chain}" "${arg_string}" "${CN_CHAIN_NAME}" "${entry_chain}" "${arg_string}" "${CN_CHAIN_NAME}"
+}
+
+cn_validate_client_ip() {
+  local ip="$1"
+  [[ "${ip}" =~ ^[0-9A-Fa-f:.]+$ ]]
 }
 
 cn_render_apply_commands() {
@@ -115,12 +259,6 @@ cn_render_apply_commands() {
   local forward_mode="${2:-all}"
   local forward_ifaces="${3:-}"
   shift 3 || true
-
-  local -a args
-  args=(render-apply)
-  if [[ -n "${client_ip}" ]]; then
-    args+=(--client-ip "${client_ip}")
-  fi
 
   case "${forward_mode}" in
     all|"")
@@ -145,11 +283,55 @@ cn_render_apply_commands() {
       ;;
   esac
 
-  cn_region_tool "${args[@]}" "$@"
+  local cidrs cidr
+  cidrs="$(cn_collect_cidrs "$@")" || return 1
+  if [[ -z "${cidrs}" ]]; then
+    echo "所选地区没有可用 CIDR 段。" >&2
+    return 1
+  fi
+
+  printf 'ipset create %s hash:net family inet -exist\n' "${CN_SET_NAME}"
+  printf 'ipset flush %s\n' "${CN_SET_NAME}"
+  while IFS= read -r cidr; do
+    [[ -n "${cidr}" ]] || continue
+    printf 'ipset add %s %s -exist\n' "${CN_SET_NAME}" "${cidr}"
+  done <<<"${cidrs}"
+  if [[ -n "${client_ip}" ]]; then
+    if ! cn_validate_client_ip "${client_ip}"; then
+      echo "非法客户端 IP：${client_ip}" >&2
+      return 1
+    fi
+    printf 'ipset add %s %s -exist\n' "${CN_SET_NAME}" "${client_ip}"
+  fi
+
+  printf 'iptables -N %s 2>/dev/null || true\n' "${CN_CHAIN_NAME}"
+  cn_remove_jump_command INPUT
+  cn_remove_jump_command FORWARD
+  printf 'iptables -F %s\n' "${CN_CHAIN_NAME}"
+  cn_add_jump_command INPUT
+  if [[ "${forward_mode}" != "none" ]]; then
+    if [[ "${forward_mode}" == "selected" ]]; then
+      local iface
+      for iface in ${forward_ifaces}; do
+        cn_add_jump_command FORWARD -i "${iface}"
+        cn_add_jump_command FORWARD -o "${iface}"
+      done
+    else
+      cn_add_jump_command FORWARD
+    fi
+  fi
+  printf 'iptables -A %s -i lo -j ACCEPT\n' "${CN_CHAIN_NAME}"
+  printf 'iptables -A %s -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT\n' "${CN_CHAIN_NAME}"
+  printf 'iptables -A %s -m set --match-set %s src -j ACCEPT\n' "${CN_CHAIN_NAME}" "${CN_SET_NAME}"
+  printf 'iptables -A %s -j REJECT\n' "${CN_CHAIN_NAME}"
 }
 
 cn_render_clear_commands() {
-  cn_region_tool render-clear
+  cn_remove_jump_command INPUT
+  cn_remove_jump_command FORWARD
+  printf 'iptables -F %s 2>/dev/null || true\n' "${CN_CHAIN_NAME}"
+  printf 'iptables -X %s 2>/dev/null || true\n' "${CN_CHAIN_NAME}"
+  printf 'ipset destroy %s 2>/dev/null || true\n' "${CN_SET_NAME}"
 }
 
 cn_save_config() {
@@ -240,7 +422,7 @@ After=network-online.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/bin/bash ${CN_ROOT}/install.sh restore --update-optional
+ExecStart=/bin/bash ${CN_ROOT}/install.sh restore --offline
 
 [Install]
 WantedBy=multi-user.target
@@ -307,30 +489,6 @@ cn_install_dependencies() {
     echo "未识别到 apt-get/dnf/yum/apk/zypper，无法自动安装 iptables/ipset。" >&2
     return 1
   fi
-}
-
-cn_install_python() {
-  echo "检测到缺少 python3，开始使用系统默认软件源自动安装..." >&2
-
-  if command -v apt-get >/dev/null 2>&1; then
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get update
-    apt-get install -y python3
-  elif command -v dnf >/dev/null 2>&1; then
-    dnf install -y python3
-  elif command -v yum >/dev/null 2>&1; then
-    yum install -y python3
-  elif command -v apk >/dev/null 2>&1; then
-    apk add --no-cache python3
-  elif command -v zypper >/dev/null 2>&1; then
-    zypper --non-interactive refresh || true
-    zypper --non-interactive install python3
-  else
-    echo "未识别到 apt-get/dnf/yum/apk/zypper，无法自动安装 python3。" >&2
-    return 1
-  fi
-
-  command -v python3 >/dev/null 2>&1
 }
 
 cn_require_commands() {

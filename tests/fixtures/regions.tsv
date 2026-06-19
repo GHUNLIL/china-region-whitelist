@@ -1,0 +1,4 @@
+province	1	0	990000	测试省	990000	测试省	regions/990000.txt
+city	1	1	990000	测试省	990100	甲市	regions/990100.txt
+city	1	2	990000	测试省	990200	乙市	regions/990200.txt
+province	2	0	980000	直辖市	980000	直辖市	regions/980000.txt

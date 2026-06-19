@@ -3,17 +3,18 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${ROOT}/tools/firewall_lib.sh"
+exec 3<&0
 
 usage() {
   cat <<'EOF'
 中国大陆省/市白名单一键脚本
 
 用法：
-  ./install.sh apply [--update|--offline|--update-optional]
-                         更新数据、交互选择地区和 TUN/转发接口、应用防火墙并配置开机恢复
-  ./install.sh dry-run [--update|--offline|--update-optional]
+  ./install.sh apply [--offline|--update|--update-optional]
+                         交互选择地区和 TUN/转发接口、应用防火墙并配置开机恢复
+  ./install.sh dry-run [--offline|--update|--update-optional]
                          交互选择地区和 TUN/转发接口，只打印将执行的命令
-  ./install.sh restore [--update|--offline|--update-optional]
+  ./install.sh restore [--offline|--update|--update-optional]
                          使用上次保存的地区配置重新应用规则
   ./install.sh update-data
                          只同步最新地区 CIDR 数据到 /var/lib/china-region-whitelist
@@ -23,7 +24,7 @@ usage() {
 说明：
   apply 会让未命中白名单的所有入站端口全部拒绝。
   转发流量可选择全部托管、仅托管指定 TUN/TAP/WireGuard 接口，或不托管。
-  apply/dry-run 默认先同步最新上游数据；如需离线使用仓库内数据，加 --offline。
+  apply/dry-run 默认使用仓库内置数据，不需要 Python；如需实时同步上游数据，加 --update。
   建议先运行 dry-run，确认地区和命令后再 apply。
 EOF
 }
@@ -61,10 +62,11 @@ split_user_list() {
 read_from_tty() {
   local prompt="$1"
   local value
-  if [[ -r /dev/tty ]]; then
+  if [[ -t 0 && -r /dev/tty ]]; then
     read -r -p "${prompt}" value < /dev/tty
   else
-    read -r -p "${prompt}" value
+    printf '%s' "${prompt}" >&2
+    read -r value <&3 || value=""
   fi
   printf '%s\n' "${value}"
 }
@@ -203,6 +205,13 @@ describe_forward_selection() {
   esac
 }
 
+copy_selected_forward_ifaces() {
+  selected_forward_ifaces=()
+  if ((${#SELECTED_FORWARD_IFACES[@]} > 0)); then
+    selected_forward_ifaces=("${SELECTED_FORWARD_IFACES[@]}")
+  fi
+}
+
 confirm_client_ip() {
   local client_ip="$1"
   if [[ -z "${client_ip}" ]]; then
@@ -244,12 +253,11 @@ prepare_data_for_mode() {
       ;;
     optional)
       if ! cn_update_runtime_data; then
-        echo "同步上游数据失败，将尝试使用已有运行时数据或仓库内置数据。" >&2
-        cn_use_runtime_data_if_available
+        echo "同步上游数据失败，将使用仓库内置数据继续。" >&2
       fi
       ;;
     offline)
-      cn_use_runtime_data_if_available
+      true
       ;;
     *)
       echo "未知更新模式：${mode}" >&2
@@ -263,7 +271,7 @@ run_apply_or_dry_run() {
   local update_mode="$2"
   local -a selected_codes
   local -a selected_forward_ifaces
-  local selected_forward_mode
+  local selected_forward_mode selected_forward_ifaces_text
   prepare_data_for_mode "${update_mode}"
   interactive_select_codes
   selected_codes=("${SELECTED_CODES[@]}")
@@ -273,18 +281,22 @@ run_apply_or_dry_run() {
   fi
   interactive_select_forward_interfaces
   selected_forward_mode="${SELECTED_FORWARD_MODE}"
-  selected_forward_ifaces=("${SELECTED_FORWARD_IFACES[@]}")
+  copy_selected_forward_ifaces
+  selected_forward_ifaces_text=""
+  if ((${#selected_forward_ifaces[@]} > 0)); then
+    selected_forward_ifaces_text="${selected_forward_ifaces[*]}"
+  fi
 
   local client_ip
   client_ip="$(confirm_client_ip "$(cn_detect_ssh_client_ip)")"
 
   echo
   echo "将使用以下地区代码：${selected_codes[*]}"
-  describe_forward_selection "${selected_forward_mode}" "${selected_forward_ifaces[*]}"
+  describe_forward_selection "${selected_forward_mode}" "${selected_forward_ifaces_text}"
   echo
 
   if [[ "${dry_run}" == "1" ]]; then
-    cn_render_apply_commands "${client_ip}" "${selected_forward_mode}" "${selected_forward_ifaces[*]}" "${selected_codes[@]}"
+    cn_render_apply_commands "${client_ip}" "${selected_forward_mode}" "${selected_forward_ifaces_text}" "${selected_codes[@]}"
     return
   fi
 
@@ -296,8 +308,8 @@ run_apply_or_dry_run() {
     echo "已取消。"
     exit 0
   fi
-  cn_render_apply_commands "${client_ip}" "${selected_forward_mode}" "${selected_forward_ifaces[*]}" "${selected_codes[@]}" | cn_run_rendered_commands
-  cn_save_config "${selected_forward_mode}" "${selected_forward_ifaces[*]}" "${selected_codes[@]}"
+  cn_render_apply_commands "${client_ip}" "${selected_forward_mode}" "${selected_forward_ifaces_text}" "${selected_codes[@]}" | cn_run_rendered_commands
+  cn_save_config "${selected_forward_mode}" "${selected_forward_ifaces_text}" "${selected_codes[@]}"
   cn_install_systemd_service
   echo "规则已应用。"
   echo "已保存地区配置，重启后会由 ${CN_SERVICE_NAME} 自动恢复。"
@@ -307,7 +319,7 @@ restore_rules() {
   local update_mode="$1"
   local -a saved_codes
   local -a saved_forward_ifaces
-  local saved_forward_mode
+  local saved_forward_mode saved_forward_ifaces_text
   cn_require_root
   cn_require_commands
   prepare_data_for_mode "${update_mode}"
@@ -327,10 +339,14 @@ restore_rules() {
   while IFS= read -r iface; do
     [[ -n "${iface}" ]] && saved_forward_ifaces+=("${iface}")
   done < <(cn_load_config_forward_ifaces)
+  saved_forward_ifaces_text=""
+  if ((${#saved_forward_ifaces[@]} > 0)); then
+    saved_forward_ifaces_text="${saved_forward_ifaces[*]}"
+  fi
 
-  cn_render_apply_commands "" "${saved_forward_mode}" "${saved_forward_ifaces[*]}" "${saved_codes[@]}" | cn_run_rendered_commands
+  cn_render_apply_commands "" "${saved_forward_mode}" "${saved_forward_ifaces_text}" "${saved_codes[@]}" | cn_run_rendered_commands
   echo "已按保存配置恢复规则：${saved_codes[*]}"
-  describe_forward_selection "${saved_forward_mode}" "${saved_forward_ifaces[*]}"
+  describe_forward_selection "${saved_forward_mode}" "${saved_forward_ifaces_text}"
 }
 
 status_rules() {
@@ -364,15 +380,15 @@ main() {
   shift || true
   case "${command}" in
     apply)
-      parse_update_mode required "$@"
+      parse_update_mode offline "$@"
       run_apply_or_dry_run 0 "${UPDATE_MODE}"
       ;;
     dry-run)
-      parse_update_mode required "$@"
+      parse_update_mode offline "$@"
       run_apply_or_dry_run 1 "${UPDATE_MODE}"
       ;;
     restore)
-      parse_update_mode optional "$@"
+      parse_update_mode offline "$@"
       restore_rules "${UPDATE_MODE}"
       ;;
     update-data)
