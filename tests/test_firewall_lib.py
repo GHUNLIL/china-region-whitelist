@@ -43,24 +43,17 @@ class FirewallLibTests(unittest.TestCase):
         self.assertIn("1\t990000\t测试省", result.stdout)
         self.assertIn("2\t980000\t直辖市", result.stdout)
 
-    def test_lists_cities_for_province(self):
-        result = run_tool("list-cities", "990000")
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("1\t990100\t甲市", result.stdout)
-        self.assertIn("2\t990200\t乙市", result.stdout)
-
     def test_collects_unique_cidrs_for_multiple_region_codes(self):
-        result = run_tool("collect-cidrs", "990100", "990200")
+        result = run_tool("collect-cidrs", "990000", "980000")
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(
             result.stdout.splitlines(),
-            ["10.0.0.0/8", "198.51.100.0/24", "203.0.113.0/24"],
+            ["10.0.0.0/8", "192.0.2.0/24", "172.16.0.0/12"],
         )
 
     def test_renders_dry_run_commands_with_current_client_ip(self):
-        result = run_tool("render-apply", "--client-ip", "198.51.100.88", "990100")
+        result = run_tool("render-apply", "--client-ip", "198.51.100.88", "990000")
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("ipset create cn_region_whitelist hash:net family inet -exist", result.stdout)
@@ -70,7 +63,7 @@ class FirewallLibTests(unittest.TestCase):
         self.assertIn("iptables -A CN_REGION_WHITELIST -j REJECT", result.stdout)
 
     def test_renders_forward_chain_jump_for_forwarded_ports(self):
-        result = run_tool("render-apply", "990100")
+        result = run_tool("render-apply", "990000")
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(
@@ -80,7 +73,7 @@ class FirewallLibTests(unittest.TestCase):
         )
 
     def test_renders_selected_tun_forward_interface_jumps(self):
-        result = run_tool("render-apply", "--forward-iface", "tun0", "990100")
+        result = run_tool("render-apply", "--forward-iface", "tun0", "990000")
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(
@@ -96,7 +89,7 @@ class FirewallLibTests(unittest.TestCase):
         self.assertNotIn("iptables -C FORWARD -j CN_REGION_WHITELIST", result.stdout)
 
     def test_render_apply_can_disable_forward_management(self):
-        result = run_tool("render-apply", "--no-forward", "990100")
+        result = run_tool("render-apply", "--no-forward", "990000")
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(
@@ -126,32 +119,16 @@ class FirewallLibTests(unittest.TestCase):
         self.assertIn("直辖市", result.stdout)
         self.assertNotIn("990000", result.stdout)
 
-    def test_show_cities_accepts_province_index(self):
-        result = run_tool("show-cities", "测试省")
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("测试省", result.stdout)
-        self.assertIn("全省", result.stdout)
-        self.assertIn("甲市", result.stdout)
-        self.assertIn("乙市", result.stdout)
-        self.assertNotIn("990100", result.stdout)
-
     def test_firewall_lib_lists_regions_without_python_runtime(self):
         provinces = run_firewall_lib("cn_show_provinces")
-        cities = run_firewall_lib("cn_show_cities 测试省")
 
         self.assertEqual(provinces.returncode, 0, provinces.stderr)
         self.assertIn("1.测试省", provinces.stdout)
         self.assertIn("2.直辖市", provinces.stdout)
-        self.assertEqual(cities.returncode, 0, cities.stderr)
-        self.assertIn("测试省 可选城市", cities.stdout)
-        self.assertIn("0.全省", cities.stdout)
-        self.assertIn("1.甲市", cities.stdout)
-        self.assertIn("2.乙市", cities.stdout)
 
     def test_firewall_lib_renders_rules_without_python_runtime(self):
         result = run_firewall_lib(
-            "cn_render_apply_commands 198.51.100.88 selected tun0 990100"
+            "cn_render_apply_commands 198.51.100.88 selected tun0 990000"
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -165,16 +142,19 @@ class FirewallLibTests(unittest.TestCase):
         result = run_firewall_lib("cn_render_apply_commands '' all '' 123456")
 
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("未知地区代码", result.stderr)
+        self.assertIn("未知省份代码", result.stderr)
 
-    def test_resolves_province_and_city_names_to_codes(self):
+    def test_firewall_lib_rejects_non_province_code_at_runtime(self):
+        result = run_firewall_lib("cn_render_apply_commands '' all '' 990100")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("未知省份代码", result.stderr)
+
+    def test_resolves_province_names_to_codes(self):
         province = run_tool("resolve-province", "测试省")
-        city = run_tool("resolve-city", "测试省", "甲市")
 
         self.assertEqual(province.returncode, 0, province.stderr)
-        self.assertEqual(city.returncode, 0, city.stderr)
         self.assertEqual(province.stdout.strip(), "990000")
-        self.assertEqual(city.stdout.strip(), "990100")
 
     def test_install_script_does_not_capture_interactive_function_with_mapfile(self):
         script = INSTALL_SH.read_text(encoding="utf-8")
@@ -214,7 +194,7 @@ class FirewallLibTests(unittest.TestCase):
         self.assertIn("cn_save_config", script)
         self.assertIn("cn_install_systemd_service", script)
         self.assertIn("interactive_select_forward_interfaces", script)
-        self.assertIn("已自动选择全市/全省", script)
+        self.assertNotIn("cn_resolve_city", script)
 
     def test_firewall_lib_configures_systemd_persistence(self):
         script = FIREWALL_LIB.read_text(encoding="utf-8")

@@ -57,22 +57,6 @@ def resolve_province(metadata: dict, selector: str) -> dict:
     raise SystemExit(f"省份名称不唯一：{selector}")
 
 
-def resolve_city(metadata: dict, province_selector: str, city_selector: str) -> dict:
-    province = resolve_province(metadata, province_selector)
-    city_selector = city_selector.strip()
-    normalized = normalize_name(city_selector)
-    for index, city in enumerate(province.get("cities", []), 1):
-        city_name = str(city["name"])
-        if (
-            city_selector == str(index)
-            or city_selector == str(city["code"])
-            or city_selector == city_name
-            or normalized == normalize_name(city_name)
-        ):
-            return city
-    raise SystemExit(f"在 {province['name']} 中未找到城市：{city_selector}")
-
-
 def normalize_name(name: str) -> str:
     suffixes = [
         "特别行政区",
@@ -82,8 +66,6 @@ def normalize_name(name: str) -> str:
         "自治区",
         "省",
         "市",
-        "地区",
-        "盟",
     ]
     result = name.strip()
     for suffix in suffixes:
@@ -93,21 +75,10 @@ def normalize_name(name: str) -> str:
     return result
 
 
-def list_cities(metadata: dict, province_code: str) -> list[tuple[int, str, str]]:
-    province = find_province(metadata, province_code)
-    return [
-        (index, str(city["code"]), str(city["name"]))
-        for index, city in enumerate(province.get("cities", []), 1)
-    ]
-
-
 def find_region_file(metadata: dict, code: str) -> str:
     for province in metadata["provinces"]:
         if str(province["code"]) == code:
             return str(province["file"])
-        for city in province.get("cities", []):
-            if str(city["code"]) == code:
-                return str(city["file"])
     raise SystemExit(f"Unknown region code: {code}")
 
 
@@ -235,18 +206,6 @@ def show_provinces(metadata: dict) -> None:
         print(f"{index}.{name}")
 
 
-def show_cities(metadata: dict, province_selector: str) -> None:
-    province = resolve_province(metadata, province_selector)
-    print(f"{province['name']} 可选城市：")
-    print("0.全市" if str(province["name"]).endswith("市") else "0.全省")
-    cities = list_cities(metadata, str(province["code"]))
-    if not cities:
-        print("   该地区暂无市级细分，请选择全省。")
-        return
-    for index, _code, name in cities:
-        print(f"{index}.{name}")
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--regions-json", type=Path, default=DEFAULT_REGIONS_JSON)
@@ -257,18 +216,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("show-provinces")
 
-    cities = subparsers.add_parser("list-cities")
-    cities.add_argument("province_code")
-
-    show_cities_parser = subparsers.add_parser("show-cities")
-    show_cities_parser.add_argument("province_selector")
-
     resolve_province_parser = subparsers.add_parser("resolve-province")
     resolve_province_parser.add_argument("selector")
-
-    resolve_city_parser = subparsers.add_parser("resolve-city")
-    resolve_city_parser.add_argument("province_selector")
-    resolve_city_parser.add_argument("city_selector")
 
     cidrs = subparsers.add_parser("collect-cidrs")
     cidrs.add_argument("codes", nargs="+")
@@ -296,14 +245,8 @@ def main() -> int:
         print_rows(list_provinces(metadata))
     elif args.command == "show-provinces":
         show_provinces(metadata)
-    elif args.command == "list-cities":
-        print_rows(list_cities(metadata, args.province_code))
-    elif args.command == "show-cities":
-        show_cities(metadata, args.province_selector)
     elif args.command == "resolve-province":
         print(resolve_province(metadata, args.selector)["code"])
-    elif args.command == "resolve-city":
-        print(resolve_city(metadata, args.province_selector, args.city_selector)["code"])
     elif args.command == "collect-cidrs":
         print("\n".join(collect_cidrs(metadata, args.data_dir, args.codes)))
     elif args.command == "render-apply":

@@ -1,8 +1,8 @@
-# 中国大陆省/市白名单一键脚本
+# 中国大陆省份白名单一键脚本
 
-这个项目用于在普通中国大陆服务器上按中国地区 IP 段限制入站访问：只有交互选择的省份或城市可以访问服务器，其他来源访问任意端口都会被拒绝。脚本会托管 `INPUT` 链，也可以在交互菜单里选择如何托管 `FORWARD` 转发链，因此机器上的转发端口或 TUN/TAP/WireGuard 接口也能使用同一白名单限制。
+这个项目用于在普通中国大陆服务器上按省级 IP 段限制入站访问：只有交互选择的省/自治区/直辖市可以访问服务器，其他来源访问任意端口都会被拒绝。脚本会托管 `INPUT` 链，也可以在交互菜单里选择如何托管 `FORWARD` 转发链，因此机器上的转发端口或 TUN/TAP/WireGuard 接口也能使用同一白名单限制。
 
-仓库会通过 GitHub Actions 每小时同步一次上游 CIDR 数据，并把省市索引和 CIDR 文件一起打进仓库。服务器运行 `apply` 或 `dry-run` 时默认直接使用随包数据，不需要安装 Python。
+仓库会通过 GitHub Actions 每小时同步一次上游 CIDR 数据，并把省份索引和 CIDR 文件一起打进仓库。服务器运行 `apply` 或 `dry-run` 时默认直接使用随包数据，不需要安装 Python。
 
 默认入口面向中国大陆服务器：一行 `bash <(curl ...)` 通过 GitHub 代理下载完整项目，拿到的就是仓库最近一次同步好的 IP 数据。
 
@@ -10,9 +10,9 @@
 
 - `bootstrap.sh`：默认的一键拉取入口，会下载完整项目并执行 `install.sh`
 - `install.sh`：服务器上运行的一键脚本
-- `data/regions.json`：省市索引
-- `data/regions.tsv`：服务器 Bash 运行时读取的省市索引
-- `data/regions/*.txt`：本地 CIDR 段
+- `data/regions.json`：省份索引
+- `data/regions.tsv`：服务器 Bash 运行时读取的省份索引
+- `data/regions/*.txt`：本地省级 CIDR 段
 - `tools/region_tool.py`：开发/测试用的本地数据解析工具
 - `tools/firewall_lib.sh`：防火墙辅助函数
 - `tests/`：不触碰真实防火墙的本地测试
@@ -47,9 +47,9 @@ cd china-region-whitelist
 sudo bash install.sh apply
 ```
 
-脚本会直接列出所有省份，例如 `1.北京市`、`19.广东省`。选择省份后会继续列出该省全部城市，例如 `1.广州市`、`3.深圳市`。你可以输入编号，也可以直接输入名称；多个选择用空格、英文逗号、中文逗号或顿号分隔。
+脚本会直接列出所有省/自治区/直辖市，例如 `1.北京市`、`9.上海市`、`19.广东省`。你可以输入编号，也可以直接输入名称；多个选择用空格、英文逗号、中文逗号或顿号分隔。
 
-地区选择后，脚本会显示 TUN/转发接口菜单：
+省份选择后，脚本会显示 TUN/转发接口菜单：
 
 - `0`：不托管 `FORWARD`，只限制服务器本机入站端口
 - `1`：托管所有 `FORWARD` 转发流量，兼容旧版本默认行为
@@ -58,7 +58,7 @@ sudo bash install.sh apply
 
 选择指定接口时，脚本会同时匹配该接口的入方向和出方向转发流量。
 
-`apply` 成功后会保存选择到 `/etc/china-region-whitelist.conf`，并安装 `china-region-whitelist.service`。服务器重启后，systemd 会自动按保存的地区配置恢复 ipset/iptables 规则；恢复时默认使用随包数据，不依赖网络或 Python。
+`apply` 成功后会保存选择到 `/etc/china-region-whitelist.conf`，并安装 `china-region-whitelist.service`。服务器重启后，systemd 会自动按保存的省份配置恢复 ipset/iptables 规则；恢复时默认使用随包数据，不依赖网络或 Python。
 
 默认随包数据已经由仓库定时同步。若你确实要在服务器上实时同步上游数据，可以运行下面命令；这一步需要服务器有 `python3/python`：
 
@@ -95,7 +95,7 @@ bash -n install.sh tools/firewall_lib.sh
 
 `apply` 会拒绝所有未命中白名单的入站流量，包括 SSH。脚本会检测当前 SSH 客户端 IP，并询问是否加入本次白名单，建议保留默认 `Y`。
 
-地区 CIDR 数据来自 `metowolf/iplist`。默认模式不会在服务器上访问上游数据源；如果需要最新数据，重新运行 `bootstrap.sh` 拉取仓库最新包即可。若服务器缺少 `iptables` 或 `ipset`，脚本会尝试使用系统默认软件源安装依赖；这一步可能访问发行版软件源。
+省级 CIDR 数据来自 `metowolf/iplist`。默认模式不会在服务器上访问上游数据源；如果需要最新数据，重新运行 `bootstrap.sh` 拉取仓库最新包即可。若服务器缺少 `iptables` 或 `ipset`，脚本会尝试使用系统默认软件源安装依赖；这一步可能访问发行版软件源。
 
 默认 GitHub 访问会经过 `https://gh-proxy.com/`。如果需要换代理或直连：
 

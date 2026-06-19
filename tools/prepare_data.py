@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare local province/city CIDR data for the china-region-whitelist script."""
+"""Prepare local province CIDR data for the china-region-whitelist script."""
 
 from __future__ import annotations
 
@@ -47,10 +47,8 @@ def parse_cncity(markdown: str) -> list[dict[str, object]]:
             if code == "100000" or code in EXCLUDED_PROVINCE_CODES:
                 current = None
                 continue
-            current = {**entry, "cities": []}
+            current = entry
             provinces.append(current)
-        elif current is not None:
-            current["cities"].append(entry)  # type: ignore[index]
 
     return provinces
 
@@ -90,8 +88,6 @@ def write_region_file(code: str, url: str, regions_dir: Path, force: bool, data_
 def iter_entries(provinces: list[dict[str, object]]):
     for province in provinces:
         yield province
-        for city in province["cities"]:  # type: ignore[index]
-            yield city
 
 
 def write_regions_tsv(provinces: list[dict[str, object]], target: Path) -> None:
@@ -113,21 +109,6 @@ def write_regions_tsv(provinces: list[dict[str, object]], target: Path) -> None:
                 ]
             )
         )
-        for city_index, city in enumerate(province["cities"], 1):  # type: ignore[index]
-            lines.append(
-                "\t".join(
-                    [
-                        "city",
-                        str(province_index),
-                        str(city_index),
-                        province_code,
-                        province_name,
-                        str(city["code"]),
-                        str(city["name"]),
-                        str(city["file"]),
-                    ]
-                )
-            )
     target.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 

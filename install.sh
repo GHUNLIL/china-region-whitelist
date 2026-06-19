@@ -7,17 +7,17 @@ exec 3<&0
 
 usage() {
   cat <<'EOF'
-中国大陆省/市白名单一键脚本
+中国大陆省份白名单一键脚本
 
 用法：
   ./install.sh apply [--offline|--update|--update-optional]
-                         交互选择地区和 TUN/转发接口、应用防火墙并配置开机恢复
+                         交互选择省份和 TUN/转发接口、应用防火墙并配置开机恢复
   ./install.sh dry-run [--offline|--update|--update-optional]
-                         交互选择地区和 TUN/转发接口，只打印将执行的命令
+                         交互选择省份和 TUN/转发接口，只打印将执行的命令
   ./install.sh restore [--offline|--update|--update-optional]
-                         使用上次保存的地区配置重新应用规则
+                         使用上次保存的省份配置重新应用规则
   ./install.sh update-data
-                         只同步最新地区 CIDR 数据到 /var/lib/china-region-whitelist
+                         只同步最新省级 CIDR 数据到 /var/lib/china-region-whitelist
   ./install.sh status    查看当前托管规则和开机恢复状态
   ./install.sh clear     清除本脚本创建的规则、保存配置和 systemd 服务
 
@@ -25,7 +25,7 @@ usage() {
   apply 会让未命中白名单的所有入站端口全部拒绝。
   转发流量可选择全部托管、仅托管指定 TUN/TAP/WireGuard 接口，或不托管。
   apply/dry-run 默认使用仓库内置数据，不需要 Python；如需实时同步上游数据，加 --update。
-  建议先运行 dry-run，确认地区和命令后再 apply。
+  建议先运行 dry-run，确认省份和命令后再 apply。
 EOF
 }
 
@@ -91,34 +91,11 @@ interactive_select_codes() {
     exit 1
   }
 
-  local province_selector province_code city_input city_selector city_code
+  local province_selector province_code
   while IFS= read -r province_selector; do
     [[ -n "${province_selector}" ]] || continue
     province_code="$(cn_resolve_province "${province_selector}")"
-
-    echo >&2
-    cn_show_cities "${province_code}" >&2
-    if [[ -z "$(cn_list_cities "${province_code}")" ]]; then
-      echo "该地区暂无市级细分，已自动选择全市/全省。" >&2
-      SELECTED_CODES+=("${province_code}")
-      continue
-    fi
-    echo "输入 0/全省/全市，或输入城市编号/城市名称，多个用空格/逗号分隔，例如：1 2 深圳市 广州市" >&2
-    city_input="$(read_from_tty "城市: ")"
-    [[ -n "${city_input}" ]] || {
-      echo "未输入城市选择。" >&2
-      exit 1
-    }
-
-    if [[ "${city_input}" == "0" || "${city_input}" == "全省" || "${city_input}" == "全市" ]]; then
-      SELECTED_CODES+=("${province_code}")
-    else
-      while IFS= read -r city_selector; do
-        [[ -n "${city_selector}" ]] || continue
-        city_code="$(cn_resolve_city "${province_code}" "${city_selector}")"
-        SELECTED_CODES+=("${city_code}")
-      done < <(split_user_list "${city_input}")
-    fi
+    SELECTED_CODES+=("${province_code}")
   done < <(split_user_list "${province_input}")
 }
 
@@ -281,7 +258,7 @@ run_apply_or_dry_run() {
   interactive_select_codes
   selected_codes=("${SELECTED_CODES[@]}")
   if [[ "${#selected_codes[@]}" -eq 0 ]]; then
-    echo "未选择任何地区。" >&2
+    echo "未选择任何省份。" >&2
     exit 1
   fi
   interactive_select_forward_interfaces
@@ -296,7 +273,7 @@ run_apply_or_dry_run() {
   client_ip="$(confirm_client_ip "$(cn_detect_ssh_client_ip)")"
 
   echo
-  echo "将使用以下地区代码：${selected_codes[*]}"
+  echo "将使用以下省份代码：${selected_codes[*]}"
   describe_forward_selection "${selected_forward_mode}" "${selected_forward_ifaces_text}"
   echo
 
@@ -317,7 +294,7 @@ run_apply_or_dry_run() {
   cn_save_config "${selected_forward_mode}" "${selected_forward_ifaces_text}" "${selected_codes[@]}"
   cn_install_systemd_service
   echo "规则已应用。"
-  echo "已保存地区配置，重启后会由 ${CN_SERVICE_NAME} 自动恢复。"
+  echo "已保存省份配置，重启后会由 ${CN_SERVICE_NAME} 自动恢复。"
 }
 
 restore_rules() {
@@ -335,7 +312,7 @@ restore_rules() {
   done < <(cn_load_config_codes)
 
   if [[ "${#saved_codes[@]}" -eq 0 ]]; then
-    echo "配置文件中没有地区代码。" >&2
+    echo "配置文件中没有省份代码。" >&2
     exit 1
   fi
 
