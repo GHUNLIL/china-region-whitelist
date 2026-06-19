@@ -129,7 +129,7 @@ class FirewallLibTests(unittest.TestCase):
 
     def test_firewall_lib_renders_rules_without_python_runtime(self):
         result = run_firewall_lib(
-            "CN_FIREWALL_BACKEND=iptables cn_render_apply_commands 198.51.100.88 selected tun0 '' 990000"
+            "CN_FIREWALL_BACKEND=iptables cn_render_apply_commands 198.51.100.88 selected tun0 '' '' 990000"
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -140,13 +140,13 @@ class FirewallLibTests(unittest.TestCase):
         self.assertIn("iptables -C FORWARD -o tun0 -j CN_REGION_WHITELIST", result.stdout)
 
     def test_firewall_lib_rejects_unknown_region_code(self):
-        result = run_firewall_lib("cn_render_apply_commands '' all '' '' 123456")
+        result = run_firewall_lib("cn_render_apply_commands '' all '' '' '' 123456")
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("未知省份代码", result.stderr)
 
     def test_firewall_lib_rejects_non_province_code_at_runtime(self):
-        result = run_firewall_lib("cn_render_apply_commands '' all '' '' 990100")
+        result = run_firewall_lib("cn_render_apply_commands '' all '' '' '' 990100")
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("未知省份代码", result.stderr)
@@ -197,7 +197,9 @@ class FirewallLibTests(unittest.TestCase):
         self.assertIn("cn_install_systemd_service", script)
         self.assertIn("interactive_select_forward_interfaces", script)
         self.assertIn("interactive_select_asns", script)
+        self.assertIn("interactive_select_port_policies", script)
         self.assertIn("update-asn", script)
+        self.assertNotIn("请选择 TUN/转发接口托管方式", script)
         self.assertNotIn("cn_resolve_city", script)
 
     def test_firewall_lib_configures_systemd_persistence(self):
@@ -212,11 +214,12 @@ class FirewallLibTests(unittest.TestCase):
         self.assertIn("CN_FORWARD_MODE", script)
         self.assertIn("CN_FORWARD_IFACES", script)
         self.assertIn("CN_ASNS", script)
+        self.assertIn("CN_PORT_POLICIES", script)
         self.assertIn("CN_FIREWALL_BACKEND", script)
 
     def test_firewall_lib_renders_nft_rules_without_touching_flvx_table(self):
         result = run_firewall_lib(
-            "CN_FIREWALL_BACKEND=nft cn_render_apply_commands 198.51.100.88 all '' AS64500 990000"
+            "CN_FIREWALL_BACKEND=nft cn_render_apply_commands 198.51.100.88 all '' AS64500 '' 990000"
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -231,12 +234,30 @@ class FirewallLibTests(unittest.TestCase):
 
     def test_firewall_lib_renders_nft_input_only_mode(self):
         result = run_firewall_lib(
-            "CN_FIREWALL_BACKEND=nft cn_render_apply_commands '' none '' '' 990000"
+            "CN_FIREWALL_BACKEND=nft cn_render_apply_commands '' none '' '' '' 990000"
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("nft add chain inet china_region_whitelist input", result.stdout)
         self.assertNotIn("nft add chain inet china_region_whitelist forward", result.stdout)
+
+    def test_firewall_lib_renders_nft_port_policy_before_global_rules(self):
+        result = run_firewall_lib(
+            "CN_FIREWALL_BACKEND=nft cn_render_apply_commands '' all '' AS64500 '22=测试省;10000-20000=AS64500,198.51.100.7/32' 990000"
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("nft add element inet china_region_whitelist port_policy_1_ports '{ 22 }'", result.stdout)
+        self.assertIn("nft add element inet china_region_whitelist port_policy_1_v4 '{ 10.0.0.0/8 }'", result.stdout)
+        self.assertIn("nft add element inet china_region_whitelist port_policy_2_ports '{ 10000-20000 }'", result.stdout)
+        self.assertIn("nft add element inet china_region_whitelist port_policy_2_v4 '{ 203.0.113.0/24 }'", result.stdout)
+        self.assertIn("nft add element inet china_region_whitelist port_policy_2_v4 '{ 198.51.100.7/32 }'", result.stdout)
+        self.assertIn("nft add rule inet china_region_whitelist input tcp dport @port_policy_1_ports ip saddr @port_policy_1_v4 accept", result.stdout)
+        self.assertIn("nft add rule inet china_region_whitelist input tcp dport @port_policy_1_ports meta nfproto ipv4 reject", result.stdout)
+        self.assertIn("nft add rule inet china_region_whitelist forward ct original proto-dst @port_policy_2_ports ip saddr @port_policy_2_v4 accept", result.stdout)
+        policy_reject = result.stdout.index("input tcp dport @port_policy_1_ports meta nfproto ipv4 reject")
+        global_accept = result.stdout.index("input ip saddr @allowed_v4 accept")
+        self.assertLess(policy_reject, global_accept)
 
     def test_default_downloads_use_github_proxy(self):
         firewall_lib = FIREWALL_LIB.read_text(encoding="utf-8")

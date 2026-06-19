@@ -15,6 +15,7 @@ CN_FIREWALL_BACKEND="${CN_FIREWALL_BACKEND:-auto}"
 CN_NFT_TABLE="china_region_whitelist"
 CN_NFT_SET_NAME="allowed_v4"
 CN_NFT_HOOK_PRIORITY="${CN_NFT_HOOK_PRIORITY:--10}"
+CN_PORT_POLICIES="${CN_PORT_POLICIES:-}"
 CN_GITHUB_PROXY="${CN_GITHUB_PROXY:-https://gh-proxy.com/}"
 CN_UPSTREAM_INDEX_URL="https://raw.githubusercontent.com/metowolf/iplist/master/docs/cncity.md"
 CN_UPSTREAM_DATA_BASE_URL="https://raw.githubusercontent.com/metowolf/iplist/master/data/cncity"
@@ -139,6 +140,10 @@ cn_normalize_region_name() {
 cn_list_provinces() {
   cn_require_region_index
   awk -F '\t' '$1 == "province" {print $2 "\t" $6 "\t" $7}' "${CN_REGIONS_TSV}"
+}
+
+cn_all_province_codes() {
+  cn_list_provinces | awk -F '\t' '{print $2}'
 }
 
 cn_show_provinces() {
@@ -281,9 +286,173 @@ cn_collect_allowed_cidrs() {
   } | awk '!seen[$0]++'
 }
 
+cn_trim() {
+  local value="$1"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  printf '%s\n' "${value}"
+}
+
 cn_is_ipv4_address() {
   local ip="$1"
   [[ "${ip}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]
+}
+
+cn_validate_ipv4_cidr() {
+  local value="$1"
+  local addr mask octet
+  addr="${value%/*}"
+  mask=""
+  if [[ "${value}" == */* ]]; then
+    mask="${value#*/}"
+  fi
+  [[ "${addr}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
+  IFS=. read -r o1 o2 o3 o4 <<<"${addr}"
+  for octet in "${o1}" "${o2}" "${o3}" "${o4}"; do
+    [[ "${octet}" =~ ^[0-9]+$ ]] || return 1
+    (( octet >= 0 && octet <= 255 )) || return 1
+  done
+  if [[ -n "${mask}" ]]; then
+    [[ "${mask}" =~ ^[0-9]+$ ]] || return 1
+    (( mask >= 0 && mask <= 32 )) || return 1
+  fi
+}
+
+cn_is_all_china_selector() {
+  case "$1" in
+    全国|中国|中国大陆|大陆|CN|cn|all|ALL)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+cn_split_selector_list() {
+  local input="$1"
+  input="${input//,/ }"
+  input="${input//，/ }"
+  input="${input//、/ }"
+  printf '%s\n' "${input}" | tr '[:space:]' '\n'
+}
+
+cn_collect_selector_cidrs() {
+  local selectors="$1"
+  local selector asn code
+  while IFS= read -r selector; do
+    selector="$(cn_trim "${selector}")"
+    [[ -n "${selector}" ]] || continue
+    if cn_is_all_china_selector "${selector}"; then
+      cn_collect_cidrs $(cn_all_province_codes)
+    elif [[ "${selector}" =~ ^[Aa][Ss][0-9]+$ ]]; then
+      asn="$(cn_normalize_asn "${selector}")" || return 1
+      cn_collect_asn_cidrs "AS${asn}"
+    elif cn_validate_ipv4_cidr "${selector}"; then
+      printf '%s\n' "${selector}"
+    else
+      code="$(cn_resolve_province "${selector}")" || return 1
+      cn_collect_cidrs "${code}"
+    fi
+  done < <(cn_split_selector_list "${selectors}") | awk '!seen[$0]++'
+}
+
+cn_validate_port_spec() {
+  local spec="$1"
+  local start end
+  spec="$(cn_trim "${spec}")"
+  if [[ "${spec}" =~ ^[0-9]{1,5}$ ]]; then
+    (( spec >= 1 && spec <= 65535 )) || return 1
+    return 0
+  fi
+  if [[ "${spec}" =~ ^[0-9]{1,5}-[0-9]{1,5}$ ]]; then
+    start="${spec%-*}"
+    end="${spec#*-}"
+    (( start >= 1 && start <= 65535 && end >= 1 && end <= 65535 && start <= end )) || return 1
+    return 0
+  fi
+  return 1
+}
+
+cn_validate_port_policies() {
+  local policies="$1"
+  local raw_policy port_spec selectors selector code asn
+  local -a policy_items
+  policies="${policies//；/;}"
+  [[ -n "$(cn_trim "${policies}")" ]] || return 0
+
+  IFS=';' read -r -a policy_items <<<"${policies}"
+  for raw_policy in "${policy_items[@]}"; do
+    raw_policy="$(cn_trim "${raw_policy}")"
+    [[ -n "${raw_policy}" ]] || continue
+    if [[ "${raw_policy}" != *=* ]]; then
+      echo "端口策略缺少 '='：${raw_policy}" >&2
+      return 1
+    fi
+    port_spec="$(cn_trim "${raw_policy%%=*}")"
+    selectors="$(cn_trim "${raw_policy#*=}")"
+    if ! cn_validate_port_spec "${port_spec}"; then
+      echo "非法端口或端口范围：${port_spec}" >&2
+      return 1
+    fi
+    if [[ -z "${selectors}" ]]; then
+      echo "端口策略缺少白名单：${raw_policy}" >&2
+      return 1
+    fi
+    while IFS= read -r selector; do
+      selector="$(cn_trim "${selector}")"
+      [[ -n "${selector}" ]] || continue
+      if cn_is_all_china_selector "${selector}"; then
+        true
+      elif [[ "${selector}" =~ ^[Aa][Ss][0-9]+$ ]]; then
+        asn="$(cn_normalize_asn "${selector}")" || return 1
+        [[ -n "${asn}" ]] || return 1
+      elif cn_validate_ipv4_cidr "${selector}"; then
+        true
+      else
+        code="$(cn_resolve_province "${selector}")" || return 1
+        [[ -n "${code}" ]] || return 1
+      fi
+    done < <(cn_split_selector_list "${selectors}")
+  done
+}
+
+cn_list_asns_from_port_policies() {
+  local policies="$1"
+  local raw_policy selectors selector asn
+  local -a policy_items
+  policies="${policies//；/;}"
+  [[ -n "$(cn_trim "${policies}")" ]] || return 0
+  IFS=';' read -r -a policy_items <<<"${policies}"
+  for raw_policy in "${policy_items[@]}"; do
+    raw_policy="$(cn_trim "${raw_policy}")"
+    [[ -n "${raw_policy}" && "${raw_policy}" == *=* ]] || continue
+    selectors="$(cn_trim "${raw_policy#*=}")"
+    while IFS= read -r selector; do
+      selector="$(cn_trim "${selector}")"
+      [[ -n "${selector}" ]] || continue
+      if [[ "${selector}" =~ ^[Aa][Ss][0-9]+$ ]]; then
+        asn="$(cn_normalize_asn "${selector}")" || return 1
+        printf 'AS%s\n' "${asn}"
+      fi
+    done < <(cn_split_selector_list "${selectors}")
+  done | awk '!seen[$0]++'
+}
+
+cn_for_each_port_policy() {
+  local policies="$1"
+  local callback="$2"
+  local raw_policy port_spec selectors index=0
+  local -a policy_items
+  policies="${policies//；/;}"
+  [[ -n "$(cn_trim "${policies}")" ]] || return 0
+  IFS=';' read -r -a policy_items <<<"${policies}"
+  for raw_policy in "${policy_items[@]}"; do
+    raw_policy="$(cn_trim "${raw_policy}")"
+    [[ -n "${raw_policy}" ]] || continue
+    port_spec="$(cn_trim "${raw_policy%%=*}")"
+    selectors="$(cn_trim "${raw_policy#*=}")"
+    index=$((index + 1))
+    "${callback}" "${index}" "${port_spec}" "${selectors}"
+  done
 }
 
 cn_remove_jump_command() {
@@ -347,9 +516,11 @@ cn_render_apply_commands_iptables() {
   local forward_mode="${2:-all}"
   local forward_ifaces="${3:-}"
   local asns="${4:-}"
-  shift 4 || true
+  local port_policies="${5:-}"
+  shift 5 || true
 
   cn_validate_forward_selection "${forward_mode}" "${forward_ifaces}" || return 1
+  cn_validate_port_policies "${port_policies}" || return 1
 
   local cidrs cidr
   cidrs="$(cn_collect_allowed_cidrs "${asns}" "$@")" || return 1
@@ -372,6 +543,8 @@ cn_render_apply_commands_iptables() {
     printf 'ipset add %s %s -exist\n' "${CN_SET_NAME}" "${client_ip}"
   fi
 
+  cn_for_each_port_policy "${port_policies}" cn_render_iptables_port_policy_set
+
   printf 'iptables -N %s 2>/dev/null || true\n' "${CN_CHAIN_NAME}"
   cn_remove_jump_command INPUT
   cn_remove_jump_command FORWARD
@@ -388,10 +561,48 @@ cn_render_apply_commands_iptables() {
       cn_add_jump_command FORWARD
     fi
   fi
+  cn_for_each_port_policy "${port_policies}" cn_render_iptables_port_policy_rules
   printf 'iptables -A %s -i lo -j ACCEPT\n' "${CN_CHAIN_NAME}"
   printf 'iptables -A %s -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT\n' "${CN_CHAIN_NAME}"
   printf 'iptables -A %s -m set --match-set %s src -j ACCEPT\n' "${CN_CHAIN_NAME}" "${CN_SET_NAME}"
   printf 'iptables -A %s -j REJECT\n' "${CN_CHAIN_NAME}"
+}
+
+cn_iptables_port_spec() {
+  local spec="$1"
+  printf '%s\n' "${spec/-/:}"
+}
+
+cn_render_iptables_port_policy_set() {
+  local index="$1"
+  local _port_spec="$2"
+  local selectors="$3"
+  local set_name="${CN_SET_NAME}_port_${index}"
+  local cidrs cidr
+  cidrs="$(cn_collect_selector_cidrs "${selectors}")" || return 1
+  if [[ -z "${cidrs}" ]]; then
+    echo "端口策略 ${index} 没有可用 IPv4 CIDR 段。" >&2
+    return 1
+  fi
+  printf 'ipset create %s hash:net family inet -exist\n' "${set_name}"
+  printf 'ipset flush %s\n' "${set_name}"
+  while IFS= read -r cidr; do
+    [[ -n "${cidr}" ]] || continue
+    printf 'ipset add %s %s -exist\n' "${set_name}" "${cidr}"
+  done <<<"${cidrs}"
+}
+
+cn_render_iptables_port_policy_rules() {
+  local index="$1"
+  local port_spec="$2"
+  local _selectors="$3"
+  local set_name="${CN_SET_NAME}_port_${index}"
+  local iptables_port
+  iptables_port="$(cn_iptables_port_spec "${port_spec}")"
+  printf 'iptables -A %s -p tcp --dport %s -m set --match-set %s src -j ACCEPT\n' "${CN_CHAIN_NAME}" "${iptables_port}" "${set_name}"
+  printf 'iptables -A %s -p udp --dport %s -m set --match-set %s src -j ACCEPT\n' "${CN_CHAIN_NAME}" "${iptables_port}" "${set_name}"
+  printf 'iptables -A %s -p tcp --dport %s -j REJECT\n' "${CN_CHAIN_NAME}" "${iptables_port}"
+  printf 'iptables -A %s -p udp --dport %s -j REJECT\n' "${CN_CHAIN_NAME}" "${iptables_port}"
 }
 
 cn_render_apply_commands_nft() {
@@ -399,9 +610,11 @@ cn_render_apply_commands_nft() {
   local forward_mode="${2:-all}"
   local forward_ifaces="${3:-}"
   local asns="${4:-}"
-  shift 4 || true
+  local port_policies="${5:-}"
+  shift 5 || true
 
   cn_validate_forward_selection "${forward_mode}" "${forward_ifaces}" || return 1
+  cn_validate_port_policies "${port_policies}" || return 1
 
   local cidrs cidr iface
   cidrs="$(cn_collect_allowed_cidrs "${asns}" "$@")" || return 1
@@ -428,16 +641,19 @@ cn_render_apply_commands_nft() {
       echo "nft 后端当前只托管 IPv4 白名单，已跳过 IPv6 客户端临时白名单：${client_ip}" >&2
     fi
   fi
+  cn_for_each_port_policy "${port_policies}" cn_render_nft_port_policy_sets
 
   printf "nft add chain inet %s input '{ type filter hook input priority %s; policy accept; }'\n" "${CN_NFT_TABLE}" "${CN_NFT_HOOK_PRIORITY}"
   printf 'nft add rule inet %s input iifname "lo" accept\n' "${CN_NFT_TABLE}"
   printf 'nft add rule inet %s input ct state established,related accept\n' "${CN_NFT_TABLE}"
+  cn_for_each_port_policy "${port_policies}" cn_render_nft_port_policy_input_rules
   printf 'nft add rule inet %s input ip saddr @%s accept\n' "${CN_NFT_TABLE}" "${CN_NFT_SET_NAME}"
   printf 'nft add rule inet %s input meta nfproto ipv4 reject\n' "${CN_NFT_TABLE}"
 
   if [[ "${forward_mode}" != "none" ]]; then
     printf "nft add chain inet %s forward '{ type filter hook forward priority %s; policy accept; }'\n" "${CN_NFT_TABLE}" "${CN_NFT_HOOK_PRIORITY}"
     printf 'nft add rule inet %s forward ct state established,related accept\n' "${CN_NFT_TABLE}"
+    cn_for_each_port_policy "${port_policies}" cn_render_nft_port_policy_forward_rules
     if [[ "${forward_mode}" == "selected" ]]; then
       for iface in ${forward_ifaces}; do
         printf 'nft add rule inet %s forward iifname "%s" ip saddr @%s accept\n' "${CN_NFT_TABLE}" "${iface}" "${CN_NFT_SET_NAME}"
@@ -450,6 +666,43 @@ cn_render_apply_commands_nft() {
       printf 'nft add rule inet %s forward meta nfproto ipv4 reject\n' "${CN_NFT_TABLE}"
     fi
   fi
+}
+
+cn_render_nft_port_policy_sets() {
+  local index="$1"
+  local port_spec="$2"
+  local selectors="$3"
+  local cidrs cidr
+  cidrs="$(cn_collect_selector_cidrs "${selectors}")" || return 1
+  if [[ -z "${cidrs}" ]]; then
+    echo "端口策略 ${index} 没有可用 IPv4 CIDR 段。" >&2
+    return 1
+  fi
+  printf "nft add set inet %s port_policy_%s_ports '{ type inet_service; flags interval; }'\n" "${CN_NFT_TABLE}" "${index}"
+  printf "nft add element inet %s port_policy_%s_ports '{ %s }'\n" "${CN_NFT_TABLE}" "${index}" "${port_spec}"
+  printf "nft add set inet %s port_policy_%s_v4 '{ type ipv4_addr; flags interval; }'\n" "${CN_NFT_TABLE}" "${index}"
+  while IFS= read -r cidr; do
+    [[ -n "${cidr}" ]] || continue
+    printf "nft add element inet %s port_policy_%s_v4 '{ %s }'\n" "${CN_NFT_TABLE}" "${index}" "${cidr}"
+  done <<<"${cidrs}"
+}
+
+cn_render_nft_port_policy_input_rules() {
+  local index="$1"
+  local _port_spec="$2"
+  local _selectors="$3"
+  printf 'nft add rule inet %s input tcp dport @port_policy_%s_ports ip saddr @port_policy_%s_v4 accept\n' "${CN_NFT_TABLE}" "${index}" "${index}"
+  printf 'nft add rule inet %s input udp dport @port_policy_%s_ports ip saddr @port_policy_%s_v4 accept\n' "${CN_NFT_TABLE}" "${index}" "${index}"
+  printf 'nft add rule inet %s input tcp dport @port_policy_%s_ports meta nfproto ipv4 reject\n' "${CN_NFT_TABLE}" "${index}"
+  printf 'nft add rule inet %s input udp dport @port_policy_%s_ports meta nfproto ipv4 reject\n' "${CN_NFT_TABLE}" "${index}"
+}
+
+cn_render_nft_port_policy_forward_rules() {
+  local index="$1"
+  local _port_spec="$2"
+  local _selectors="$3"
+  printf 'nft add rule inet %s forward ct original proto-dst @port_policy_%s_ports ip saddr @port_policy_%s_v4 accept\n' "${CN_NFT_TABLE}" "${index}" "${index}"
+  printf 'nft add rule inet %s forward ct original proto-dst @port_policy_%s_ports meta nfproto ipv4 reject\n' "${CN_NFT_TABLE}" "${index}"
 }
 
 cn_render_clear_commands() {
@@ -474,7 +727,8 @@ cn_save_config() {
   local forward_mode="$1"
   local forward_ifaces="$2"
   local asns="$3"
-  shift 3 || true
+  local port_policies="$4"
+  shift 4 || true
   local -a codes=("$@")
   if [[ "${#codes[@]}" -eq 0 ]]; then
     echo "没有可保存的省份代码。" >&2
@@ -487,12 +741,14 @@ cn_save_config() {
       return 1
       ;;
   esac
+  cn_validate_port_policies "${port_policies}" || return 1
 
   mkdir -p "$(dirname "${CN_CONFIG_FILE}")"
   {
     echo "# Generated by china-region-whitelist. Edit CN_CODES only if you know the province codes."
     printf 'CN_CODES="%s"\n' "${codes[*]}"
     printf 'CN_ASNS="%s"\n' "${asns}"
+    printf 'CN_PORT_POLICIES=%q\n' "${port_policies}"
     printf 'CN_FORWARD_MODE="%s"\n' "${forward_mode}"
     printf 'CN_FORWARD_IFACES="%s"\n' "${forward_ifaces}"
     printf 'CN_FIREWALL_BACKEND="%s"\n' "$(cn_effective_firewall_backend)"
@@ -542,6 +798,11 @@ cn_load_config_asns() {
     asn="$(cn_normalize_asn "${raw_asn}")" || return 1
     printf 'AS%s\n' "${asn}"
   done
+}
+
+cn_load_config_port_policies() {
+  cn_source_config
+  printf '%s\n' "${CN_PORT_POLICIES:-}"
 }
 
 cn_load_config_forward_ifaces() {
@@ -599,6 +860,7 @@ cn_show_persistence_status() {
     source "${CN_CONFIG_FILE}"
     echo "regions: ${CN_CODES:-未配置}"
     echo "asns: ${CN_ASNS:-未配置}"
+    echo "port policies: ${CN_PORT_POLICIES:-未配置}"
     echo "backend: ${CN_FIREWALL_BACKEND:-auto}"
     echo "forward: ${CN_FORWARD_MODE:-all}${CN_FORWARD_IFACES:+ (${CN_FORWARD_IFACES})}"
   else

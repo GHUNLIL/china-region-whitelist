@@ -11,9 +11,9 @@ usage() {
 
 用法：
   ./install.sh apply [--offline|--update|--update-optional]
-                         交互选择省份和 TUN/转发接口、应用防火墙并配置开机恢复
+                         交互选择整机白名单和端口优先白名单、应用防火墙并配置开机恢复
   ./install.sh dry-run [--offline|--update|--update-optional]
-                         交互选择省份和 TUN/转发接口，只打印将执行的命令
+                         交互选择整机白名单和端口优先白名单，只打印将执行的命令
   ./install.sh restore [--offline|--update|--update-optional]
                          使用上次保存的省份配置重新应用规则
   ./install.sh update-data
@@ -25,7 +25,8 @@ usage() {
 
 说明：
   apply 会让未命中白名单的所有入站端口全部拒绝。
-  转发流量可选择全部托管、仅托管指定 TUN/TAP/WireGuard 接口，或不托管。
+  默认整机托管本机 INPUT 和 FORWARD 转发流量，包含 flvx/nftables 转发端口。
+  可为单端口或端口范围设置更高优先级的白名单。
   使用 flvx/nftables 转发时，建议保留默认 nft 后端；本脚本会使用独立 nft 表，不会改写 flvx 表。
   apply/dry-run 默认使用仓库内置数据，不需要 Python；如需实时同步上游数据，加 --update。
   建议先运行 dry-run，确认省份和命令后再 apply。
@@ -59,7 +60,7 @@ split_user_list() {
   input="${input//,/ }"
   input="${input//，/ }"
   input="${input//、/ }"
-  printf '%s\n' ${input}
+  printf '%s\n' "${input}" | tr '[:space:]' '\n'
 }
 
 read_from_tty() {
@@ -85,7 +86,7 @@ interactive_select_codes() {
   echo "请选择省/自治区/直辖市：" >&2
   cn_show_provinces >&2
   echo >&2
-  echo "输入编号或省份名称，多个用空格/逗号分隔，例如：1 2 广东省 江苏省" >&2
+  echo "输入编号或省份名称，多个用空格/逗号分隔；输入 全国 表示中国大陆全部省级 IP。" >&2
 
   local province_input
   province_input="$(read_from_tty "省份: ")"
@@ -97,8 +98,14 @@ interactive_select_codes() {
   local province_selector province_code
   while IFS= read -r province_selector; do
     [[ -n "${province_selector}" ]] || continue
-    province_code="$(cn_resolve_province "${province_selector}")"
-    SELECTED_CODES+=("${province_code}")
+    if cn_is_all_china_selector "${province_selector}"; then
+      while IFS= read -r province_code; do
+        [[ -n "${province_code}" ]] && SELECTED_CODES+=("${province_code}")
+      done < <(cn_all_province_codes)
+    else
+      province_code="$(cn_resolve_province "${province_selector}")"
+      SELECTED_CODES+=("${province_code}")
+    fi
   done < <(split_user_list "${province_input}")
 }
 
@@ -119,6 +126,22 @@ interactive_select_asns() {
   done < <(split_user_list "${asn_input}")
 }
 
+interactive_select_port_policies() {
+  SELECTED_PORT_POLICIES=""
+  echo >&2
+  echo "可选：端口优先白名单。命中端口策略时，会先按该端口自己的白名单判断。" >&2
+  echo "格式：端口=白名单；多条用英文或中文分号分隔。" >&2
+  echo "示例：22=上海市,AS16509,1.2.3.4/32;10000-20000=广东省,江苏省" >&2
+  echo "白名单可写：全国/中国、具体省份、AS12345、IPv4 或 IPv4 CIDR。留空则只使用整机默认白名单。" >&2
+
+  local policy_input
+  policy_input="$(read_from_tty "端口优先白名单（可空）: ")"
+  policy_input="${policy_input//；/;}"
+  [[ -n "$(cn_trim "${policy_input}")" ]] || return 0
+  cn_validate_port_policies "${policy_input}"
+  SELECTED_PORT_POLICIES="${policy_input}"
+}
+
 append_unique_forward_iface() {
   local candidate="$1"
   local existing
@@ -129,71 +152,36 @@ append_unique_forward_iface() {
 }
 
 interactive_select_forward_interfaces() {
-  SELECTED_FORWARD_MODE="all"
+  SELECTED_FORWARD_MODE="${CN_FORWARD_MODE_DEFAULT:-all}"
   SELECTED_FORWARD_IFACES=()
-
-  local -a tunnel_ifaces=()
-  local iface
-  while IFS= read -r iface; do
-    [[ -n "${iface}" ]] && tunnel_ifaces+=("${iface}")
-  done < <(cn_list_tunnel_interfaces)
-
-  local input item index ok
-  while true; do
-    echo >&2
-    echo "请选择 TUN/转发接口托管方式：" >&2
-    echo "0. 不托管 FORWARD 转发，只限制服务器本机入站端口" >&2
-    echo "1. 托管所有 FORWARD 转发流量（默认，兼容旧版本）" >&2
-
-    index=2
-    if [[ "${#tunnel_ifaces[@]}" -gt 0 ]]; then
-      echo "检测到的 TUN/TAP/WireGuard 类接口：" >&2
-      for iface in "${tunnel_ifaces[@]}"; do
-        printf '%d. %s\n' "${index}" "${iface}" >&2
-        index=$((index + 1))
-      done
-    else
-      echo "未自动检测到 TUN/TAP/WireGuard 类接口。" >&2
-    fi
-    echo "也可以直接输入接口名，多个用空格/逗号分隔，例如：tun0 wg0 tailscale0" >&2
-
-    input="$(read_from_tty "转发接口 [1]: ")"
-    input="${input:-1}"
-
-    if [[ "${input}" == "0" ]]; then
-      SELECTED_FORWARD_MODE="none"
-      SELECTED_FORWARD_IFACES=()
-      return
-    fi
-    if [[ "${input}" == "1" ]]; then
+  case "${SELECTED_FORWARD_MODE}" in
+    all|"")
       SELECTED_FORWARD_MODE="all"
-      SELECTED_FORWARD_IFACES=()
-      return
-    fi
-
-    SELECTED_FORWARD_MODE="selected"
-    SELECTED_FORWARD_IFACES=()
-    ok=1
-    while IFS= read -r item; do
-      [[ -n "${item}" ]] || continue
-      if [[ "${item}" =~ ^[0-9]+$ ]]; then
-        if (( item >= 2 && item < 2 + ${#tunnel_ifaces[@]} )); then
-          append_unique_forward_iface "${tunnel_ifaces[$((item - 2))]}"
-        else
-          ok=0
-        fi
-      elif cn_validate_interface_name "${item}"; then
-        append_unique_forward_iface "${item}"
-      else
-        ok=0
+      echo >&2
+      echo "整机白名单范围：本机服务 INPUT + 所有 FORWARD 转发流量（包含 flvx/nftables 转发）。" >&2
+      ;;
+    none)
+      echo >&2
+      echo "整机白名单范围：仅本机服务 INPUT，不托管 FORWARD 转发。" >&2
+      ;;
+    selected)
+      local iface
+      for iface in ${CN_FORWARD_IFACES_DEFAULT:-}; do
+        cn_validate_interface_name "${iface}"
+        append_unique_forward_iface "${iface}"
+      done
+      if [[ "${#SELECTED_FORWARD_IFACES[@]}" -eq 0 ]]; then
+        echo "CN_FORWARD_MODE_DEFAULT=selected 时必须设置 CN_FORWARD_IFACES_DEFAULT。" >&2
+        exit 1
       fi
-    done < <(split_user_list "${input}")
-
-    if [[ "${ok}" -eq 1 && "${#SELECTED_FORWARD_IFACES[@]}" -gt 0 ]]; then
-      return
-    fi
-    echo "输入无效：请输入 0、1、接口编号，或合法接口名；多个接口可用空格/逗号分隔。" >&2
-  done
+      echo >&2
+      echo "整机白名单范围：本机服务 INPUT + 指定 FORWARD 接口 ${SELECTED_FORWARD_IFACES[*]}。" >&2
+      ;;
+    *)
+      echo "未知 CN_FORWARD_MODE_DEFAULT：${SELECTED_FORWARD_MODE}，可选 all/none/selected。" >&2
+      exit 1
+      ;;
+  esac
 }
 
 describe_forward_selection() {
@@ -274,7 +262,7 @@ run_apply_or_dry_run() {
   local -a selected_codes
   local -a selected_asns
   local -a selected_forward_ifaces
-  local selected_forward_mode selected_forward_ifaces_text selected_asns_text
+  local selected_forward_mode selected_forward_ifaces_text selected_asns_text selected_port_policies
   prepare_data_for_mode "${update_mode}"
   interactive_select_codes
   selected_codes=("${SELECTED_CODES[@]}")
@@ -288,6 +276,8 @@ run_apply_or_dry_run() {
   if ((${#selected_asns[@]} > 0)); then
     selected_asns_text="${selected_asns[*]}"
   fi
+  interactive_select_port_policies
+  selected_port_policies="${SELECTED_PORT_POLICIES}"
   interactive_select_forward_interfaces
   selected_forward_mode="${SELECTED_FORWARD_MODE}"
   copy_selected_forward_ifaces
@@ -304,12 +294,15 @@ run_apply_or_dry_run() {
   if [[ -n "${selected_asns_text}" ]]; then
     echo "将额外加入 ASN 白名单：${selected_asns_text}"
   fi
+  if [[ -n "${selected_port_policies}" ]]; then
+    echo "端口优先白名单：${selected_port_policies}"
+  fi
   describe_forward_selection "${selected_forward_mode}" "${selected_forward_ifaces_text}"
   echo "防火墙后端：$(cn_effective_firewall_backend)"
   echo
 
   if [[ "${dry_run}" == "1" ]]; then
-    cn_render_apply_commands "${client_ip}" "${selected_forward_mode}" "${selected_forward_ifaces_text}" "${selected_asns_text}" "${selected_codes[@]}"
+    cn_render_apply_commands "${client_ip}" "${selected_forward_mode}" "${selected_forward_ifaces_text}" "${selected_asns_text}" "${selected_port_policies}" "${selected_codes[@]}"
     return
   fi
 
@@ -321,8 +314,8 @@ run_apply_or_dry_run() {
     echo "已取消。"
     exit 0
   fi
-  cn_render_apply_commands "${client_ip}" "${selected_forward_mode}" "${selected_forward_ifaces_text}" "${selected_asns_text}" "${selected_codes[@]}" | cn_run_rendered_commands
-  cn_save_config "${selected_forward_mode}" "${selected_forward_ifaces_text}" "${selected_asns_text}" "${selected_codes[@]}"
+  cn_render_apply_commands "${client_ip}" "${selected_forward_mode}" "${selected_forward_ifaces_text}" "${selected_asns_text}" "${selected_port_policies}" "${selected_codes[@]}" | cn_run_rendered_commands
+  cn_save_config "${selected_forward_mode}" "${selected_forward_ifaces_text}" "${selected_asns_text}" "${selected_port_policies}" "${selected_codes[@]}"
   cn_install_systemd_service
   echo "规则已应用。"
   echo "已保存省份配置，重启后会由 ${CN_SERVICE_NAME} 自动恢复。"
@@ -333,7 +326,7 @@ restore_rules() {
   local -a saved_codes
   local -a saved_asns
   local -a saved_forward_ifaces
-  local saved_forward_mode saved_forward_ifaces_text saved_asns_text
+  local saved_forward_mode saved_forward_ifaces_text saved_asns_text saved_port_policies
   cn_require_root
   cn_source_config
   cn_require_commands
@@ -358,6 +351,10 @@ restore_rules() {
     saved_asns_text="${saved_asns[*]}"
     CN_ASN_OFFLINE="${CN_ASN_OFFLINE:-1}"
   fi
+  saved_port_policies="$(cn_load_config_port_policies)"
+  if [[ -n "${saved_port_policies}" ]]; then
+    CN_ASN_OFFLINE="${CN_ASN_OFFLINE:-1}"
+  fi
 
   saved_forward_mode="$(cn_load_config_forward_mode)"
   saved_forward_ifaces=()
@@ -369,22 +366,29 @@ restore_rules() {
     saved_forward_ifaces_text="${saved_forward_ifaces[*]}"
   fi
 
-  cn_render_apply_commands "" "${saved_forward_mode}" "${saved_forward_ifaces_text}" "${saved_asns_text}" "${saved_codes[@]}" | cn_run_rendered_commands
+  cn_render_apply_commands "" "${saved_forward_mode}" "${saved_forward_ifaces_text}" "${saved_asns_text}" "${saved_port_policies}" "${saved_codes[@]}" | cn_run_rendered_commands
   echo "已按保存配置恢复规则：${saved_codes[*]}"
   if [[ -n "${saved_asns_text}" ]]; then
     echo "已加载 ASN 白名单：${saved_asns_text}"
+  fi
+  if [[ -n "${saved_port_policies}" ]]; then
+    echo "已加载端口优先白名单：${saved_port_policies}"
   fi
   describe_forward_selection "${saved_forward_mode}" "${saved_forward_ifaces_text}"
 }
 
 update_asn_rules() {
   local -a saved_asns
-  local asn
+  local asn saved_port_policies
   cn_require_root
   saved_asns=()
   while IFS= read -r asn; do
     [[ -n "${asn}" ]] && saved_asns+=("${asn}")
   done < <(cn_load_config_asns)
+  saved_port_policies="$(cn_load_config_port_policies)"
+  while IFS= read -r asn; do
+    [[ -n "${asn}" ]] && saved_asns+=("${asn}")
+  done < <(cn_list_asns_from_port_policies "${saved_port_policies}")
   if [[ "${#saved_asns[@]}" -eq 0 ]]; then
     echo "配置文件中没有 ASN 白名单。" >&2
     exit 1

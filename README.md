@@ -1,6 +1,6 @@
 # 中国大陆省份白名单一键脚本
 
-这个项目用于在普通中国大陆服务器上按省级 IP 段限制入站访问：只有交互选择的省/自治区/直辖市、当前 SSH 客户端 IP、以及可选的 ASN 白名单可以访问服务器，其他来源访问任意端口都会被拒绝。脚本会托管 `INPUT` 链，也可以在交互菜单里选择如何托管 `FORWARD` 转发链，因此机器上的转发端口、TUN/TAP/WireGuard 接口，或 flvx 这类 nftables 转发规则也能使用同一白名单限制。
+这个项目用于在普通中国大陆服务器上按省级 IP 段限制整机访问：只有交互选择的省/自治区/直辖市、当前 SSH 客户端 IP、以及可选的 ASN 白名单可以访问服务器，其他来源访问任意端口都会被拒绝。默认同时托管本机 `INPUT` 和转发 `FORWARD` 流量，因此本机服务、转发端口、TUN/TAP/WireGuard 接口，或 flvx 这类 nftables 转发规则都会走同一套整机白名单。
 
 仓库会通过 GitHub Actions 每小时同步一次上游 CIDR 数据，并把省份索引和 CIDR 文件一起打进仓库。服务器运行 `apply` 或 `dry-run` 时默认直接使用随包数据，不需要安装 Python。
 
@@ -48,22 +48,30 @@ cd china-region-whitelist
 sudo bash install.sh apply
 ```
 
-脚本会直接列出所有省/自治区/直辖市，例如 `1.北京市`、`9.上海市`、`19.广东省`。你可以输入编号，也可以直接输入名称；多个选择用空格、英文逗号、中文逗号或顿号分隔。
+脚本会直接列出所有省/自治区/直辖市，例如 `1.北京市`、`9.上海市`、`19.广东省`。你可以输入编号，也可以直接输入名称；多个选择用空格、英文逗号、中文逗号或顿号分隔。输入 `全国`、`中国` 或 `CN` 表示中国大陆全部省级 IP。
 
 省份选择后，脚本会询问是否追加 ASN 白名单。这个功能适合把国外管理服务器所在云厂商 ASN 加进去，避免省份白名单生效后海外管理机无法登录。可以输入 `AS16509 AS14061` 这种格式，也可以留空。
 
-然后脚本会显示 TUN/转发接口菜单：
+然后脚本会询问端口优先白名单。端口策略优先级高于整机默认白名单：如果某个端口命中了端口策略，来源必须匹配该端口自己的白名单，否则即使来源在整机默认白名单里也会被拒绝。
 
-- `0`：不托管 `FORWARD`，只限制服务器本机入站端口
-- `1`：托管所有 `FORWARD` 转发流量，兼容旧版本默认行为
-- 检测到的 `tun`、`tap`、`wg`、`tailscale` 等接口会以编号列出，可选择一个或多个
-- 如果接口没有被自动识别，也可以直接输入接口名，例如 `tun0 wg0`
+端口策略格式：
 
-如果你的转发都由 [Sagit-chu/flvx](https://github.com/Sagit-chu/flvx) 的 nftables 模式管理，通常选 `1` 即可让 flvx 转发端口也受同一白名单保护；如果只想限制服务器本机 SSH/面板/网站端口，则选 `0`。本脚本在 nft 后端下只创建 `table inet china_region_whitelist`，不会删除或重写 flvx 使用的 `table inet flvx`。
+```text
+22=上海市,AS16509,1.2.3.4/32;10000-20000=广东省,江苏省
+```
 
-选择指定接口时，脚本会同时匹配该接口的入方向和出方向转发流量。
+白名单项可写：
 
-`apply` 成功后会保存选择到 `/etc/china-region-whitelist.conf`，并安装 `china-region-whitelist.service`。服务器重启后，systemd 会自动按保存的省份和 ASN 配置恢复规则；恢复时默认使用随包数据和本地 ASN 缓存，不依赖网络或 Python。
+- `全国` / `中国` / `CN`
+- 省份或直辖市，例如 `上海市`、`广东省`
+- ASN，例如 `AS16509`
+- IPv4 或 IPv4 CIDR，例如 `1.2.3.4`、`1.2.3.0/24`
+
+默认整机托管本机服务和所有 `FORWARD` 转发流量。如果你的转发都由 [Sagit-chu/flvx](https://github.com/Sagit-chu/flvx) 的 nftables 模式管理，flvx 转发端口会自动受同一白名单保护。本脚本在 nft 后端下只创建 `table inet china_region_whitelist`，不会删除或重写 flvx 使用的 `table inet flvx`。
+
+高级用法：如果只想限制本机服务、不托管 `FORWARD`，可以设置 `CN_FORWARD_MODE_DEFAULT=none`；如果只想托管指定接口，可以设置 `CN_FORWARD_MODE_DEFAULT=selected CN_FORWARD_IFACES_DEFAULT="tun0 wg0"`。
+
+`apply` 成功后会保存选择到 `/etc/china-region-whitelist.conf`，并安装 `china-region-whitelist.service`。服务器重启后，systemd 会自动按保存的省份、ASN 和端口策略恢复规则；恢复时默认使用随包数据和本地 ASN 缓存，不依赖网络或 Python。
 
 防火墙后端默认 `CN_FIREWALL_BACKEND=auto`：检测到 `nft` 时优先使用 nftables，否则回落到 iptables/ipset。也可以显式指定：
 
