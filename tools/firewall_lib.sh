@@ -11,9 +11,15 @@ CN_CONFIG_FILE="${CN_CONFIG_FILE:-/etc/china-region-whitelist.conf}"
 CN_SERVICE_NAME="china-region-whitelist.service"
 CN_CHAIN_NAME="CN_REGION_WHITELIST"
 CN_SET_NAME="cn_region_whitelist"
+CN_FIREWALL_BACKEND="${CN_FIREWALL_BACKEND:-auto}"
+CN_NFT_TABLE="china_region_whitelist"
+CN_NFT_SET_NAME="allowed_v4"
+CN_NFT_HOOK_PRIORITY="${CN_NFT_HOOK_PRIORITY:--10}"
 CN_GITHUB_PROXY="${CN_GITHUB_PROXY:-https://gh-proxy.com/}"
 CN_UPSTREAM_INDEX_URL="https://raw.githubusercontent.com/metowolf/iplist/master/docs/cncity.md"
 CN_UPSTREAM_DATA_BASE_URL="https://raw.githubusercontent.com/metowolf/iplist/master/data/cncity"
+CN_ASN_BASE_URL="${CN_ASN_BASE_URL:-https://raw.githubusercontent.com/ipverse/as-ip-blocks/master/as}"
+CN_ASN_CACHE_DIR="${CN_ASN_CACHE_DIR:-${CN_RUNTIME_DIR}/asn}"
 
 cn_python_for_update() {
   if command -v python3 >/dev/null 2>&1; then
@@ -45,6 +51,37 @@ cn_github_proxy_url() {
       ;;
     *)
       printf '%s/%s\n' "${proxy}" "${raw_url}"
+      ;;
+  esac
+}
+
+cn_proxy_url_if_github() {
+  local raw_url="$1"
+  case "${raw_url}" in
+    https://raw.githubusercontent.com/*|https://github.com/*)
+      cn_github_proxy_url "${raw_url}"
+      ;;
+    *)
+      printf '%s\n' "${raw_url}"
+      ;;
+  esac
+}
+
+cn_effective_firewall_backend() {
+  case "${CN_FIREWALL_BACKEND}" in
+    nft|iptables)
+      printf '%s\n' "${CN_FIREWALL_BACKEND}"
+      ;;
+    auto|"")
+      if command -v nft >/dev/null 2>&1; then
+        printf '%s\n' "nft"
+      else
+        printf '%s\n' "iptables"
+      fi
+      ;;
+    *)
+      echo "未知防火墙后端：${CN_FIREWALL_BACKEND}，可选 auto/nft/iptables。" >&2
+      return 1
       ;;
   esac
 }
@@ -172,6 +209,83 @@ cn_region_file_for_code() {
   printf '%s\n' "${file}"
 }
 
+cn_normalize_asn() {
+  local asn="$1"
+  asn="${asn#"${asn%%[![:space:]]*}"}"
+  asn="${asn%"${asn##*[![:space:]]}"}"
+  case "${asn}" in
+    AS*|as*|As*|aS*) asn="${asn:2}" ;;
+  esac
+  if ! [[ "${asn}" =~ ^[0-9]{1,10}$ ]]; then
+    echo "非法 ASN：${asn}" >&2
+    return 1
+  fi
+  if (( asn < 1 || asn > 4294967295 )); then
+    echo "ASN 超出范围：${asn}" >&2
+    return 1
+  fi
+  printf '%s\n' "${asn}"
+}
+
+cn_asn_prefix_url() {
+  local asn="$1"
+  local base_url
+  base_url="$(cn_proxy_url_if_github "${CN_ASN_BASE_URL}")"
+  printf '%s/%s/ipv4-aggregated.txt\n' "${base_url%/}" "${asn}"
+}
+
+cn_download_asn_prefixes() {
+  local asn="$1"
+  local target="$2"
+  local tmp url
+  if [[ "${CN_ASN_OFFLINE:-0}" == "1" ]]; then
+    echo "缺少 ASN${asn} 缓存：${target}；请先运行 apply 或 update-asn 在线同步。" >&2
+    return 1
+  fi
+  if ! command -v curl >/dev/null 2>&1; then
+    echo "同步 ASN${asn} 前缀需要 curl。" >&2
+    return 1
+  fi
+  mkdir -p "$(dirname "${target}")"
+  tmp="${target}.tmp.$$"
+  url="$(cn_asn_prefix_url "${asn}")"
+  echo "正在同步 ASN${asn} IPv4 前缀：${url}" >&2
+  if ! curl -fsSL --connect-timeout 20 --retry 2 --retry-delay 1 -o "${tmp}" "${url}"; then
+    rm -f "${tmp}"
+    echo "同步 ASN${asn} 前缀失败。" >&2
+    return 1
+  fi
+  mv "${tmp}" "${target}"
+}
+
+cn_collect_asn_cidrs() {
+  local raw_asn asn file
+  for raw_asn in "$@"; do
+    [[ -n "${raw_asn}" ]] || continue
+    asn="$(cn_normalize_asn "${raw_asn}")" || return 1
+    file="${CN_ASN_CACHE_DIR}/AS${asn}.txt"
+    if [[ ! -s "${file}" || "${CN_ASN_FORCE_UPDATE:-0}" == "1" ]]; then
+      cn_download_asn_prefixes "${asn}" "${file}" || return 1
+    fi
+    awk 'NF && $0 !~ /^#/ && $0 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\/[0-9]+$/ {print $0}' "${file}"
+  done
+}
+
+cn_collect_allowed_cidrs() {
+  local asns="$1"
+  shift || true
+  {
+    cn_collect_cidrs "$@"
+    # shellcheck disable=SC2086
+    cn_collect_asn_cidrs ${asns}
+  } | awk '!seen[$0]++'
+}
+
+cn_is_ipv4_address() {
+  local ip="$1"
+  [[ "${ip}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]
+}
+
 cn_remove_jump_command() {
   local entry_chain="$1"
   printf "iptables -S %s | awk '\$0 ~ / -j %s( |\$)/ { sub(/^-A /, \"-D \"); print \"iptables \" \$0 }' | sh\n" \
@@ -195,16 +309,21 @@ cn_validate_client_ip() {
 }
 
 cn_render_apply_commands() {
-  local client_ip="${1:-}"
-  local forward_mode="${2:-all}"
-  local forward_ifaces="${3:-}"
-  shift 3 || true
+  local backend
+  backend="$(cn_effective_firewall_backend)" || return 1
+  case "${backend}" in
+    nft) cn_render_apply_commands_nft "$@" ;;
+    iptables) cn_render_apply_commands_iptables "$@" ;;
+  esac
+}
 
+cn_validate_forward_selection() {
+  local forward_mode="$1"
+  local forward_ifaces="$2"
   case "${forward_mode}" in
     all|"")
       ;;
     none)
-      args+=(--no-forward)
       ;;
     selected)
       if [[ -z "${forward_ifaces}" ]]; then
@@ -214,7 +333,6 @@ cn_render_apply_commands() {
       local iface
       for iface in ${forward_ifaces}; do
         cn_validate_interface_name "${iface}" || return 1
-        args+=(--forward-iface "${iface}")
       done
       ;;
     *)
@@ -222,11 +340,21 @@ cn_render_apply_commands() {
       return 1
       ;;
   esac
+}
+
+cn_render_apply_commands_iptables() {
+  local client_ip="${1:-}"
+  local forward_mode="${2:-all}"
+  local forward_ifaces="${3:-}"
+  local asns="${4:-}"
+  shift 4 || true
+
+  cn_validate_forward_selection "${forward_mode}" "${forward_ifaces}" || return 1
 
   local cidrs cidr
-  cidrs="$(cn_collect_cidrs "$@")" || return 1
+  cidrs="$(cn_collect_allowed_cidrs "${asns}" "$@")" || return 1
   if [[ -z "${cidrs}" ]]; then
-    echo "所选省份没有可用 CIDR 段。" >&2
+    echo "所选省份/ASN 没有可用 IPv4 CIDR 段。" >&2
     return 1
   fi
 
@@ -266,19 +394,87 @@ cn_render_apply_commands() {
   printf 'iptables -A %s -j REJECT\n' "${CN_CHAIN_NAME}"
 }
 
+cn_render_apply_commands_nft() {
+  local client_ip="${1:-}"
+  local forward_mode="${2:-all}"
+  local forward_ifaces="${3:-}"
+  local asns="${4:-}"
+  shift 4 || true
+
+  cn_validate_forward_selection "${forward_mode}" "${forward_ifaces}" || return 1
+
+  local cidrs cidr iface
+  cidrs="$(cn_collect_allowed_cidrs "${asns}" "$@")" || return 1
+  if [[ -z "${cidrs}" ]]; then
+    echo "所选省份/ASN 没有可用 IPv4 CIDR 段。" >&2
+    return 1
+  fi
+
+  printf 'nft delete table inet %s 2>/dev/null || true\n' "${CN_NFT_TABLE}"
+  printf 'nft add table inet %s\n' "${CN_NFT_TABLE}"
+  printf "nft add set inet %s %s '{ type ipv4_addr; flags interval; }'\n" "${CN_NFT_TABLE}" "${CN_NFT_SET_NAME}"
+  while IFS= read -r cidr; do
+    [[ -n "${cidr}" ]] || continue
+    printf "nft add element inet %s %s '{ %s }'\n" "${CN_NFT_TABLE}" "${CN_NFT_SET_NAME}" "${cidr}"
+  done <<<"${cidrs}"
+  if [[ -n "${client_ip}" ]]; then
+    if ! cn_validate_client_ip "${client_ip}"; then
+      echo "非法客户端 IP：${client_ip}" >&2
+      return 1
+    fi
+    if cn_is_ipv4_address "${client_ip}"; then
+      printf "nft add element inet %s %s '{ %s }'\n" "${CN_NFT_TABLE}" "${CN_NFT_SET_NAME}" "${client_ip}"
+    else
+      echo "nft 后端当前只托管 IPv4 白名单，已跳过 IPv6 客户端临时白名单：${client_ip}" >&2
+    fi
+  fi
+
+  printf "nft add chain inet %s input '{ type filter hook input priority %s; policy accept; }'\n" "${CN_NFT_TABLE}" "${CN_NFT_HOOK_PRIORITY}"
+  printf 'nft add rule inet %s input iifname "lo" accept\n' "${CN_NFT_TABLE}"
+  printf 'nft add rule inet %s input ct state established,related accept\n' "${CN_NFT_TABLE}"
+  printf 'nft add rule inet %s input ip saddr @%s accept\n' "${CN_NFT_TABLE}" "${CN_NFT_SET_NAME}"
+  printf 'nft add rule inet %s input meta nfproto ipv4 reject\n' "${CN_NFT_TABLE}"
+
+  if [[ "${forward_mode}" != "none" ]]; then
+    printf "nft add chain inet %s forward '{ type filter hook forward priority %s; policy accept; }'\n" "${CN_NFT_TABLE}" "${CN_NFT_HOOK_PRIORITY}"
+    printf 'nft add rule inet %s forward ct state established,related accept\n' "${CN_NFT_TABLE}"
+    if [[ "${forward_mode}" == "selected" ]]; then
+      for iface in ${forward_ifaces}; do
+        printf 'nft add rule inet %s forward iifname "%s" ip saddr @%s accept\n' "${CN_NFT_TABLE}" "${iface}" "${CN_NFT_SET_NAME}"
+        printf 'nft add rule inet %s forward iifname "%s" meta nfproto ipv4 reject\n' "${CN_NFT_TABLE}" "${iface}"
+        printf 'nft add rule inet %s forward oifname "%s" ip saddr @%s accept\n' "${CN_NFT_TABLE}" "${iface}" "${CN_NFT_SET_NAME}"
+        printf 'nft add rule inet %s forward oifname "%s" meta nfproto ipv4 reject\n' "${CN_NFT_TABLE}" "${iface}"
+      done
+    else
+      printf 'nft add rule inet %s forward ip saddr @%s accept\n' "${CN_NFT_TABLE}" "${CN_NFT_SET_NAME}"
+      printf 'nft add rule inet %s forward meta nfproto ipv4 reject\n' "${CN_NFT_TABLE}"
+    fi
+  fi
+}
+
 cn_render_clear_commands() {
-  cn_remove_jump_command INPUT
-  cn_remove_jump_command FORWARD
-  printf 'iptables -F %s 2>/dev/null || true\n' "${CN_CHAIN_NAME}"
-  printf 'iptables -X %s 2>/dev/null || true\n' "${CN_CHAIN_NAME}"
-  printf 'ipset destroy %s 2>/dev/null || true\n' "${CN_SET_NAME}"
+  local backend
+  backend="$(cn_effective_firewall_backend)" || return 1
+  case "${backend}" in
+    nft)
+      printf 'nft delete table inet %s 2>/dev/null || true\n' "${CN_NFT_TABLE}"
+      ;;
+    iptables)
+      cn_remove_jump_command INPUT
+      cn_remove_jump_command FORWARD
+      printf 'iptables -F %s 2>/dev/null || true\n' "${CN_CHAIN_NAME}"
+      printf 'iptables -X %s 2>/dev/null || true\n' "${CN_CHAIN_NAME}"
+      printf 'ipset destroy %s 2>/dev/null || true\n' "${CN_SET_NAME}"
+      ;;
+  esac
 }
 
 cn_save_config() {
   cn_require_root
   local forward_mode="$1"
   local forward_ifaces="$2"
-  shift 2 || true
+  local asns="$3"
+  shift 3 || true
   local -a codes=("$@")
   if [[ "${#codes[@]}" -eq 0 ]]; then
     echo "没有可保存的省份代码。" >&2
@@ -296,10 +492,13 @@ cn_save_config() {
   {
     echo "# Generated by china-region-whitelist. Edit CN_CODES only if you know the province codes."
     printf 'CN_CODES="%s"\n' "${codes[*]}"
+    printf 'CN_ASNS="%s"\n' "${asns}"
     printf 'CN_FORWARD_MODE="%s"\n' "${forward_mode}"
     printf 'CN_FORWARD_IFACES="%s"\n' "${forward_ifaces}"
+    printf 'CN_FIREWALL_BACKEND="%s"\n' "$(cn_effective_firewall_backend)"
     printf 'CN_ROOT="%s"\n' "${CN_ROOT}"
     printf 'CN_RUNTIME_DIR="%s"\n' "${CN_RUNTIME_DIR}"
+    printf 'CN_ASN_CACHE_DIR="%s"\n' "${CN_ASN_CACHE_DIR}"
   } > "${CN_CONFIG_FILE}"
   chmod 0644 "${CN_CONFIG_FILE}"
 }
@@ -334,6 +533,15 @@ cn_load_config_codes() {
 cn_load_config_forward_mode() {
   cn_source_config
   printf '%s\n' "${CN_FORWARD_MODE:-all}"
+}
+
+cn_load_config_asns() {
+  cn_source_config
+  local raw_asn asn
+  for raw_asn in ${CN_ASNS:-}; do
+    asn="$(cn_normalize_asn "${raw_asn}")" || return 1
+    printf 'AS%s\n' "${asn}"
+  done
 }
 
 cn_load_config_forward_ifaces() {
@@ -390,6 +598,8 @@ cn_show_persistence_status() {
     # shellcheck disable=SC1090
     source "${CN_CONFIG_FILE}"
     echo "regions: ${CN_CODES:-未配置}"
+    echo "asns: ${CN_ASNS:-未配置}"
+    echo "backend: ${CN_FIREWALL_BACKEND:-auto}"
     echo "forward: ${CN_FORWARD_MODE:-all}${CN_FORWARD_IFACES:+ (${CN_FORWARD_IFACES})}"
   else
     echo "config: 未配置"
@@ -409,45 +619,69 @@ cn_require_root() {
   fi
 }
 
+cn_dependency_packages() {
+  local backend="$1"
+  case "${backend}" in
+    nft) printf '%s\n' "nftables" ;;
+    iptables) printf '%s\n' "iptables ipset" ;;
+  esac
+}
+
 cn_install_dependencies() {
-  echo "检测到缺少 iptables/ipset，开始使用系统默认软件源自动安装..." >&2
+  local backend="$1"
+  local packages
+  packages="$(cn_dependency_packages "${backend}")"
+  echo "检测到缺少 ${packages}，开始使用系统默认软件源自动安装..." >&2
 
   if command -v apt-get >/dev/null 2>&1; then
     export DEBIAN_FRONTEND=noninteractive
     apt-get update
-    apt-get install -y iptables ipset
+    # shellcheck disable=SC2086
+    apt-get install -y ${packages}
   elif command -v dnf >/dev/null 2>&1; then
-    dnf install -y iptables ipset
+    # shellcheck disable=SC2086
+    dnf install -y ${packages}
   elif command -v yum >/dev/null 2>&1; then
-    yum install -y iptables ipset
+    # shellcheck disable=SC2086
+    yum install -y ${packages}
   elif command -v apk >/dev/null 2>&1; then
-    apk add --no-cache iptables ipset
+    # shellcheck disable=SC2086
+    apk add --no-cache ${packages}
   elif command -v zypper >/dev/null 2>&1; then
     zypper --non-interactive refresh || true
-    zypper --non-interactive install iptables ipset
+    # shellcheck disable=SC2086
+    zypper --non-interactive install ${packages}
   else
-    echo "未识别到 apt-get/dnf/yum/apk/zypper，无法自动安装 iptables/ipset。" >&2
+    echo "未识别到 apt-get/dnf/yum/apk/zypper，无法自动安装 ${packages}。" >&2
     return 1
   fi
 }
 
 cn_require_commands() {
+  local backend command_name
+  backend="$(cn_effective_firewall_backend)" || exit 1
   local missing=0
-  for command_name in iptables ipset; do
+  local -a required_commands=()
+  case "${backend}" in
+    nft) required_commands=(nft) ;;
+    iptables) required_commands=(iptables ipset) ;;
+  esac
+
+  for command_name in "${required_commands[@]}"; do
     if ! command -v "${command_name}" >/dev/null 2>&1; then
       echo "缺少命令：${command_name}" >&2
       missing=1
     fi
   done
   if [[ "${missing}" -ne 0 ]]; then
-    cn_install_dependencies || {
+    cn_install_dependencies "${backend}" || {
       echo "自动安装失败，请检查系统软件源后重试。" >&2
       exit 1
     }
   fi
 
   missing=0
-  for command_name in iptables ipset; do
+  for command_name in "${required_commands[@]}"; do
     if ! command -v "${command_name}" >/dev/null 2>&1; then
       echo "安装后仍缺少命令：${command_name}" >&2
       missing=1

@@ -20,6 +20,7 @@ china-region-whitelist bootstrap
 
 环境变量：
   CN_GITHUB_PROXY=https://gh-proxy.com/   GitHub 代理前缀；设为 direct 可直连 GitHub
+  CN_FIREWALL_BACKEND=auto               防火墙后端：auto/nft/iptables
   CN_INSTALL_DIR=/opt/china-region-whitelist
   CN_REPO_BRANCH=main
 EOF

@@ -30,6 +30,7 @@ def run_firewall_lib(command: str) -> subprocess.CompletedProcess[str]:
         f"source {FIREWALL_LIB}; "
         f"DATA_DIR={FIXTURES}; "
         f"CN_REGIONS_TSV={FIXTURES / 'regions.tsv'}; "
+        f"CN_ASN_CACHE_DIR={FIXTURES / 'asn'}; "
         f"{command}"
     )
     return subprocess.run(["bash", "-c", script], text=True, capture_output=True, check=False)
@@ -128,7 +129,7 @@ class FirewallLibTests(unittest.TestCase):
 
     def test_firewall_lib_renders_rules_without_python_runtime(self):
         result = run_firewall_lib(
-            "cn_render_apply_commands 198.51.100.88 selected tun0 990000"
+            "CN_FIREWALL_BACKEND=iptables cn_render_apply_commands 198.51.100.88 selected tun0 '' 990000"
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -139,13 +140,13 @@ class FirewallLibTests(unittest.TestCase):
         self.assertIn("iptables -C FORWARD -o tun0 -j CN_REGION_WHITELIST", result.stdout)
 
     def test_firewall_lib_rejects_unknown_region_code(self):
-        result = run_firewall_lib("cn_render_apply_commands '' all '' 123456")
+        result = run_firewall_lib("cn_render_apply_commands '' all '' '' 123456")
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("未知省份代码", result.stderr)
 
     def test_firewall_lib_rejects_non_province_code_at_runtime(self):
-        result = run_firewall_lib("cn_render_apply_commands '' all '' 990100")
+        result = run_firewall_lib("cn_render_apply_commands '' all '' '' 990100")
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("未知省份代码", result.stderr)
@@ -167,12 +168,13 @@ class FirewallLibTests(unittest.TestCase):
         script = FIREWALL_LIB.read_text(encoding="utf-8")
 
         self.assertIn("cn_install_dependencies()", script)
+        self.assertIn("nftables", script)
         self.assertIn("apt-get update", script)
-        self.assertIn("apt-get install -y iptables ipset", script)
-        self.assertIn("dnf install -y iptables ipset", script)
-        self.assertIn("yum install -y iptables ipset", script)
-        self.assertIn("apk add --no-cache iptables ipset", script)
-        self.assertIn("zypper --non-interactive install iptables ipset", script)
+        self.assertIn("apt-get install -y ${packages}", script)
+        self.assertIn("dnf install -y ${packages}", script)
+        self.assertIn("yum install -y ${packages}", script)
+        self.assertIn("apk add --no-cache ${packages}", script)
+        self.assertIn("zypper --non-interactive install ${packages}", script)
         self.assertIn("cn_install_dependencies", script)
 
     def test_firewall_lib_runtime_does_not_auto_install_python3(self):
@@ -194,6 +196,8 @@ class FirewallLibTests(unittest.TestCase):
         self.assertIn("cn_save_config", script)
         self.assertIn("cn_install_systemd_service", script)
         self.assertIn("interactive_select_forward_interfaces", script)
+        self.assertIn("interactive_select_asns", script)
+        self.assertIn("update-asn", script)
         self.assertNotIn("cn_resolve_city", script)
 
     def test_firewall_lib_configures_systemd_persistence(self):
@@ -207,6 +211,32 @@ class FirewallLibTests(unittest.TestCase):
         self.assertIn("--output-dir", script)
         self.assertIn("CN_FORWARD_MODE", script)
         self.assertIn("CN_FORWARD_IFACES", script)
+        self.assertIn("CN_ASNS", script)
+        self.assertIn("CN_FIREWALL_BACKEND", script)
+
+    def test_firewall_lib_renders_nft_rules_without_touching_flvx_table(self):
+        result = run_firewall_lib(
+            "CN_FIREWALL_BACKEND=nft cn_render_apply_commands 198.51.100.88 all '' AS64500 990000"
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("nft delete table inet china_region_whitelist", result.stdout)
+        self.assertIn("nft add table inet china_region_whitelist", result.stdout)
+        self.assertIn("nft add element inet china_region_whitelist allowed_v4 '{ 10.0.0.0/8 }'", result.stdout)
+        self.assertIn("nft add element inet china_region_whitelist allowed_v4 '{ 203.0.113.0/24 }'", result.stdout)
+        self.assertIn("nft add element inet china_region_whitelist allowed_v4 '{ 198.51.100.88 }'", result.stdout)
+        self.assertIn("nft add rule inet china_region_whitelist forward ip saddr @allowed_v4 accept", result.stdout)
+        self.assertIn("nft add rule inet china_region_whitelist forward meta nfproto ipv4 reject", result.stdout)
+        self.assertNotIn("table inet flvx", result.stdout)
+
+    def test_firewall_lib_renders_nft_input_only_mode(self):
+        result = run_firewall_lib(
+            "CN_FIREWALL_BACKEND=nft cn_render_apply_commands '' none '' '' 990000"
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("nft add chain inet china_region_whitelist input", result.stdout)
+        self.assertNotIn("nft add chain inet china_region_whitelist forward", result.stdout)
 
     def test_default_downloads_use_github_proxy(self):
         firewall_lib = FIREWALL_LIB.read_text(encoding="utf-8")
@@ -215,6 +245,8 @@ class FirewallLibTests(unittest.TestCase):
 
         self.assertIn("CN_GITHUB_PROXY=\"${CN_GITHUB_PROXY:-https://gh-proxy.com/}\"", firewall_lib)
         self.assertIn("cn_github_proxy_url", firewall_lib)
+        self.assertIn("CN_ASN_BASE_URL", firewall_lib)
+        self.assertIn("cn_proxy_url_if_github", firewall_lib)
         self.assertIn("CN_GITHUB_PROXY:-https://gh-proxy.com/", bootstrap)
         self.assertIn("https://gh-proxy.com/https://raw.githubusercontent.com", readme)
         self.assertIn("bash <(curl -fsSL", readme)
@@ -232,8 +264,8 @@ class FirewallLibTests(unittest.TestCase):
 
         self.assertIn("cn_list_tunnel_interfaces()", script)
         self.assertIn("tun*|tap*|wg*|tailscale*", script)
-        self.assertIn("--forward-iface", script)
-        self.assertIn("--no-forward", script)
+        self.assertIn("CN_FORWARD_IFACES", script)
+        self.assertIn("cn_validate_forward_selection", script)
 
     def test_prepare_data_can_refresh_and_force_downloads(self):
         script = (ROOT / "tools" / "prepare_data.py").read_text(encoding="utf-8")

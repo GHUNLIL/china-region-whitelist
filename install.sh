@@ -18,12 +18,15 @@ usage() {
                          使用上次保存的省份配置重新应用规则
   ./install.sh update-data
                          只同步最新省级 CIDR 数据到 /var/lib/china-region-whitelist
+  ./install.sh update-asn
+                         重新同步已保存的 ASN 白名单并恢复规则
   ./install.sh status    查看当前托管规则和开机恢复状态
   ./install.sh clear     清除本脚本创建的规则、保存配置和 systemd 服务
 
 说明：
   apply 会让未命中白名单的所有入站端口全部拒绝。
   转发流量可选择全部托管、仅托管指定 TUN/TAP/WireGuard 接口，或不托管。
+  使用 flvx/nftables 转发时，建议保留默认 nft 后端；本脚本会使用独立 nft 表，不会改写 flvx 表。
   apply/dry-run 默认使用仓库内置数据，不需要 Python；如需实时同步上游数据，加 --update。
   建议先运行 dry-run，确认省份和命令后再 apply。
 EOF
@@ -97,6 +100,23 @@ interactive_select_codes() {
     province_code="$(cn_resolve_province "${province_selector}")"
     SELECTED_CODES+=("${province_code}")
   done < <(split_user_list "${province_input}")
+}
+
+interactive_select_asns() {
+  SELECTED_ASNS=()
+  echo >&2
+  echo "可选：额外 ASN 白名单，用于国外管理机或固定云厂商入口。" >&2
+  echo "例如：AS16509 AS14061。留空则不添加 ASN 白名单。" >&2
+
+  local asn_input asn_selector asn
+  asn_input="$(read_from_tty "额外 ASN（可空）: ")"
+  [[ -n "${asn_input}" ]] || return 0
+
+  while IFS= read -r asn_selector; do
+    [[ -n "${asn_selector}" ]] || continue
+    asn="$(cn_normalize_asn "${asn_selector}")"
+    SELECTED_ASNS+=("AS${asn}")
+  done < <(split_user_list "${asn_input}")
 }
 
 append_unique_forward_iface() {
@@ -252,14 +272,21 @@ run_apply_or_dry_run() {
   local dry_run="$1"
   local update_mode="$2"
   local -a selected_codes
+  local -a selected_asns
   local -a selected_forward_ifaces
-  local selected_forward_mode selected_forward_ifaces_text
+  local selected_forward_mode selected_forward_ifaces_text selected_asns_text
   prepare_data_for_mode "${update_mode}"
   interactive_select_codes
   selected_codes=("${SELECTED_CODES[@]}")
   if [[ "${#selected_codes[@]}" -eq 0 ]]; then
     echo "未选择任何省份。" >&2
     exit 1
+  fi
+  interactive_select_asns
+  selected_asns=("${SELECTED_ASNS[@]}")
+  selected_asns_text=""
+  if ((${#selected_asns[@]} > 0)); then
+    selected_asns_text="${selected_asns[*]}"
   fi
   interactive_select_forward_interfaces
   selected_forward_mode="${SELECTED_FORWARD_MODE}"
@@ -274,11 +301,15 @@ run_apply_or_dry_run() {
 
   echo
   echo "将使用以下省份代码：${selected_codes[*]}"
+  if [[ -n "${selected_asns_text}" ]]; then
+    echo "将额外加入 ASN 白名单：${selected_asns_text}"
+  fi
   describe_forward_selection "${selected_forward_mode}" "${selected_forward_ifaces_text}"
+  echo "防火墙后端：$(cn_effective_firewall_backend)"
   echo
 
   if [[ "${dry_run}" == "1" ]]; then
-    cn_render_apply_commands "${client_ip}" "${selected_forward_mode}" "${selected_forward_ifaces_text}" "${selected_codes[@]}"
+    cn_render_apply_commands "${client_ip}" "${selected_forward_mode}" "${selected_forward_ifaces_text}" "${selected_asns_text}" "${selected_codes[@]}"
     return
   fi
 
@@ -290,8 +321,8 @@ run_apply_or_dry_run() {
     echo "已取消。"
     exit 0
   fi
-  cn_render_apply_commands "${client_ip}" "${selected_forward_mode}" "${selected_forward_ifaces_text}" "${selected_codes[@]}" | cn_run_rendered_commands
-  cn_save_config "${selected_forward_mode}" "${selected_forward_ifaces_text}" "${selected_codes[@]}"
+  cn_render_apply_commands "${client_ip}" "${selected_forward_mode}" "${selected_forward_ifaces_text}" "${selected_asns_text}" "${selected_codes[@]}" | cn_run_rendered_commands
+  cn_save_config "${selected_forward_mode}" "${selected_forward_ifaces_text}" "${selected_asns_text}" "${selected_codes[@]}"
   cn_install_systemd_service
   echo "规则已应用。"
   echo "已保存省份配置，重启后会由 ${CN_SERVICE_NAME} 自动恢复。"
@@ -300,9 +331,11 @@ run_apply_or_dry_run() {
 restore_rules() {
   local update_mode="$1"
   local -a saved_codes
+  local -a saved_asns
   local -a saved_forward_ifaces
-  local saved_forward_mode saved_forward_ifaces_text
+  local saved_forward_mode saved_forward_ifaces_text saved_asns_text
   cn_require_root
+  cn_source_config
   cn_require_commands
   prepare_data_for_mode "${update_mode}"
 
@@ -316,6 +349,16 @@ restore_rules() {
     exit 1
   fi
 
+  saved_asns=()
+  while IFS= read -r asn; do
+    [[ -n "${asn}" ]] && saved_asns+=("${asn}")
+  done < <(cn_load_config_asns)
+  saved_asns_text=""
+  if ((${#saved_asns[@]} > 0)); then
+    saved_asns_text="${saved_asns[*]}"
+    CN_ASN_OFFLINE="${CN_ASN_OFFLINE:-1}"
+  fi
+
   saved_forward_mode="$(cn_load_config_forward_mode)"
   saved_forward_ifaces=()
   while IFS= read -r iface; do
@@ -326,13 +369,40 @@ restore_rules() {
     saved_forward_ifaces_text="${saved_forward_ifaces[*]}"
   fi
 
-  cn_render_apply_commands "" "${saved_forward_mode}" "${saved_forward_ifaces_text}" "${saved_codes[@]}" | cn_run_rendered_commands
+  cn_render_apply_commands "" "${saved_forward_mode}" "${saved_forward_ifaces_text}" "${saved_asns_text}" "${saved_codes[@]}" | cn_run_rendered_commands
   echo "已按保存配置恢复规则：${saved_codes[*]}"
+  if [[ -n "${saved_asns_text}" ]]; then
+    echo "已加载 ASN 白名单：${saved_asns_text}"
+  fi
   describe_forward_selection "${saved_forward_mode}" "${saved_forward_ifaces_text}"
+}
+
+update_asn_rules() {
+  local -a saved_asns
+  local asn
+  cn_require_root
+  saved_asns=()
+  while IFS= read -r asn; do
+    [[ -n "${asn}" ]] && saved_asns+=("${asn}")
+  done < <(cn_load_config_asns)
+  if [[ "${#saved_asns[@]}" -eq 0 ]]; then
+    echo "配置文件中没有 ASN 白名单。" >&2
+    exit 1
+  fi
+  CN_ASN_FORCE_UPDATE=1 cn_collect_asn_cidrs "${saved_asns[@]}" >/dev/null
+  echo "ASN 白名单已更新：${saved_asns[*]}"
+  restore_rules offline
 }
 
 status_rules() {
   cn_require_root
+  echo "== nft table: ${CN_NFT_TABLE} =="
+  if command -v nft >/dev/null 2>&1; then
+    nft list table inet "${CN_NFT_TABLE}" 2>/dev/null || true
+  else
+    echo "nft 未安装"
+  fi
+  echo
   echo "== ipset: ${CN_SET_NAME} =="
   if command -v ipset >/dev/null 2>&1; then
     ipset list "${CN_SET_NAME}" 2>/dev/null || true
@@ -378,6 +448,7 @@ main() {
       prepare_data_for_mode "${UPDATE_MODE}"
       echo "数据已同步到：${CN_RUNTIME_DIR}"
       ;;
+    update-asn) update_asn_rules ;;
     status) status_rules ;;
     clear) clear_rules ;;
     -h|--help|help) usage ;;
