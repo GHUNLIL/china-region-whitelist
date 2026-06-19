@@ -1,4 +1,4 @@
-# po0 Region Whitelist Implementation Plan
+# China Region Whitelist Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -13,8 +13,8 @@
 ### Task 1: Project Documents
 
 **Files:**
-- Create: `docs/superpowers/specs/2026-06-04-po0-region-whitelist-design.md`
-- Create: `docs/superpowers/plans/2026-06-04-po0-region-whitelist.md`
+- Create: `docs/superpowers/specs/2026-06-04-china-region-whitelist-design.md`
+- Create: `docs/superpowers/plans/2026-06-04-china-region-whitelist.md`
 
 - [x] **Step 1: Write the accepted design spec**
 
@@ -37,7 +37,7 @@ Create `data/regions` and `vendor`.
 
 - [ ] **Step 2: Download metowolf cncity index and city CIDR files on the development machine**
 
-Use GitHub only during project preparation, not on the po0 server.
+Use GitHub only during project preparation, not on the server.
 
 - [ ] **Step 3: Optionally copy a local `ipipfree.ipdb` reference file with `--ipdb` when preparing private bundles**
 

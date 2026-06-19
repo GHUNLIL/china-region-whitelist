@@ -12,8 +12,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_REGIONS_JSON = ROOT / "data" / "regions.json"
 DEFAULT_DATA_DIR = ROOT / "data"
-SET_NAME = "po0_region_whitelist"
-CHAIN_NAME = "PO0_REGION_WHITELIST"
+SET_NAME = "cn_region_whitelist"
+CHAIN_NAME = "CN_REGION_WHITELIST"
 ENTRY_CHAINS = ("INPUT", "FORWARD")
 
 

@@ -1,8 +1,8 @@
-# po0 Region Whitelist Design
+# China Region Whitelist Design
 
 ## Goal
 
-Build a local-first one-click script for po0 servers that allows only selected mainland China provinces or cities to access the server. All inbound ports are denied by default unless the source IP is in the selected regional whitelist.
+Build a local-first one-click script for mainland China servers that allows only selected mainland China provinces or cities to access the server. All inbound ports are denied by default unless the source IP is in the selected regional whitelist.
 
 ## Constraints
 
@@ -27,7 +27,7 @@ The applied policy uses `ipset` for IP ranges and `iptables` for enforcement:
 
 - allow loopback traffic
 - allow established and related traffic
-- allow source IPs in the selected `po0_region_whitelist` set
+- allow source IPs in the selected `cn_region_whitelist` set
 - reject all other inbound traffic
 
 Before applying, the script detects the current SSH client IP from `SSH_CONNECTION` and offers to add it to the whitelist set for the current rule application. This protects active maintenance sessions when the operator's current IP is outside the selected region.

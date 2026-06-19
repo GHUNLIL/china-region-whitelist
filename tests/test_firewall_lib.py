@@ -52,19 +52,19 @@ class FirewallLibTests(unittest.TestCase):
         result = run_tool("render-apply", "--client-ip", "198.51.100.88", "990100")
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("ipset create po0_region_whitelist hash:net family inet -exist", result.stdout)
-        self.assertIn("ipset add po0_region_whitelist 10.0.0.0/8 -exist", result.stdout)
-        self.assertIn("ipset add po0_region_whitelist 198.51.100.88 -exist", result.stdout)
-        self.assertIn("iptables -A PO0_REGION_WHITELIST -m set --match-set po0_region_whitelist src -j ACCEPT", result.stdout)
-        self.assertIn("iptables -A PO0_REGION_WHITELIST -j REJECT", result.stdout)
+        self.assertIn("ipset create cn_region_whitelist hash:net family inet -exist", result.stdout)
+        self.assertIn("ipset add cn_region_whitelist 10.0.0.0/8 -exist", result.stdout)
+        self.assertIn("ipset add cn_region_whitelist 198.51.100.88 -exist", result.stdout)
+        self.assertIn("iptables -A CN_REGION_WHITELIST -m set --match-set cn_region_whitelist src -j ACCEPT", result.stdout)
+        self.assertIn("iptables -A CN_REGION_WHITELIST -j REJECT", result.stdout)
 
     def test_renders_forward_chain_jump_for_forwarded_ports(self):
         result = run_tool("render-apply", "990100")
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(
-            "iptables -C FORWARD -j PO0_REGION_WHITELIST 2>/dev/null || "
-            "iptables -I FORWARD 1 -j PO0_REGION_WHITELIST",
+            "iptables -C FORWARD -j CN_REGION_WHITELIST 2>/dev/null || "
+            "iptables -I FORWARD 1 -j CN_REGION_WHITELIST",
             result.stdout,
         )
 
@@ -73,8 +73,8 @@ class FirewallLibTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(
-            "while iptables -C FORWARD -j PO0_REGION_WHITELIST 2>/dev/null; "
-            "do iptables -D FORWARD -j PO0_REGION_WHITELIST; done",
+            "while iptables -C FORWARD -j CN_REGION_WHITELIST 2>/dev/null; "
+            "do iptables -D FORWARD -j CN_REGION_WHITELIST; done",
             result.stdout,
         )
 
@@ -116,14 +116,14 @@ class FirewallLibTests(unittest.TestCase):
     def test_firewall_lib_auto_installs_missing_iptables_and_ipset(self):
         script = FIREWALL_LIB.read_text(encoding="utf-8")
 
-        self.assertIn("po0_install_dependencies()", script)
+        self.assertIn("cn_install_dependencies()", script)
         self.assertIn("apt-get update", script)
         self.assertIn("apt-get install -y iptables ipset", script)
         self.assertIn("dnf install -y iptables ipset", script)
         self.assertIn("yum install -y iptables ipset", script)
         self.assertIn("apk add --no-cache iptables ipset", script)
         self.assertIn("zypper --non-interactive install iptables ipset", script)
-        self.assertIn("po0_install_dependencies", script)
+        self.assertIn("cn_install_dependencies", script)
 
     def test_install_script_supports_update_and_restore_modes(self):
         script = INSTALL_SH.read_text(encoding="utf-8")
@@ -131,15 +131,15 @@ class FirewallLibTests(unittest.TestCase):
         self.assertIn("update-data", script)
         self.assertIn("restore", script)
         self.assertIn("--update-optional", script)
-        self.assertIn("po0_save_config", script)
-        self.assertIn("po0_install_systemd_service", script)
+        self.assertIn("cn_save_config", script)
+        self.assertIn("cn_install_systemd_service", script)
 
     def test_firewall_lib_configures_systemd_persistence(self):
         script = FIREWALL_LIB.read_text(encoding="utf-8")
 
-        self.assertIn("PO0_CONFIG_FILE", script)
-        self.assertIn("PO0_RUNTIME_DIR", script)
-        self.assertIn("po0-region-whitelist.service", script)
+        self.assertIn("CN_CONFIG_FILE", script)
+        self.assertIn("CN_RUNTIME_DIR", script)
+        self.assertIn("china-region-whitelist.service", script)
         self.assertIn("systemctl enable", script)
         self.assertIn("restore --update-optional", script)
         self.assertIn("--output-dir", script)

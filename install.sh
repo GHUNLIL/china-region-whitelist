@@ -6,7 +6,7 @@ source "${ROOT}/tools/firewall_lib.sh"
 
 usage() {
   cat <<'EOF'
-po0 省/市白名单一键脚本
+中国大陆省/市白名单一键脚本
 
 用法：
   ./install.sh apply [--update|--offline|--update-optional]
@@ -16,7 +16,7 @@ po0 省/市白名单一键脚本
   ./install.sh restore [--update|--offline|--update-optional]
                          使用上次保存的地区配置重新应用规则
   ./install.sh update-data
-                         只同步最新地区 CIDR 数据到 /var/lib/po0-region-whitelist
+                         只同步最新地区 CIDR 数据到 /var/lib/china-region-whitelist
   ./install.sh status    查看当前托管规则和开机恢复状态
   ./install.sh clear     清除本脚本创建的规则、保存配置和 systemd 服务
 
@@ -77,7 +77,7 @@ code_at_index() {
 interactive_select_codes() {
   SELECTED_CODES=()
   echo "请选择省/自治区/直辖市：" >&2
-  po0_show_provinces >&2
+  cn_show_provinces >&2
   echo >&2
   echo "输入编号或省份名称，多个用空格/逗号分隔，例如：1 2 广东省 江苏省" >&2
 
@@ -91,10 +91,10 @@ interactive_select_codes() {
   local province_selector province_code city_input city_selector city_code
   while IFS= read -r province_selector; do
     [[ -n "${province_selector}" ]] || continue
-    province_code="$(po0_resolve_province "${province_selector}")"
+    province_code="$(cn_resolve_province "${province_selector}")"
 
     echo >&2
-    po0_show_cities "${province_code}" >&2
+    cn_show_cities "${province_code}" >&2
     echo "输入 0/全省/全市，或输入城市编号/城市名称，多个用空格/逗号分隔，例如：1 2 深圳市 广州市" >&2
     city_input="$(read_from_tty "城市: ")"
     [[ -n "${city_input}" ]] || {
@@ -107,7 +107,7 @@ interactive_select_codes() {
     else
       while IFS= read -r city_selector; do
         [[ -n "${city_selector}" ]] || continue
-        city_code="$(po0_resolve_city "${province_code}" "${city_selector}")"
+        city_code="$(cn_resolve_city "${province_code}" "${city_selector}")"
         SELECTED_CODES+=("${city_code}")
       done < <(split_user_list "${city_input}")
     fi
@@ -151,16 +151,16 @@ prepare_data_for_mode() {
   local mode="$1"
   case "${mode}" in
     required)
-      po0_update_runtime_data
+      cn_update_runtime_data
       ;;
     optional)
-      if ! po0_update_runtime_data; then
+      if ! cn_update_runtime_data; then
         echo "同步上游数据失败，将尝试使用已有运行时数据或仓库内置数据。" >&2
-        po0_use_runtime_data_if_available
+        cn_use_runtime_data_if_available
       fi
       ;;
     offline)
-      po0_use_runtime_data_if_available
+      cn_use_runtime_data_if_available
       ;;
     *)
       echo "未知更新模式：${mode}" >&2
@@ -182,76 +182,76 @@ run_apply_or_dry_run() {
   fi
 
   local client_ip
-  client_ip="$(confirm_client_ip "$(po0_detect_ssh_client_ip)")"
+  client_ip="$(confirm_client_ip "$(cn_detect_ssh_client_ip)")"
 
   echo
   echo "将使用以下地区代码：${selected_codes[*]}"
   echo
 
   if [[ "${dry_run}" == "1" ]]; then
-    po0_render_apply_commands "${client_ip}" "${selected_codes[@]}"
+    cn_render_apply_commands "${client_ip}" "${selected_codes[@]}"
     return
   fi
 
-  po0_require_root
-  po0_require_commands
+  cn_require_root
+  cn_require_commands
   echo "即将应用规则：未命中白名单的所有入站端口都会被拒绝。"
   read -r -p "确认继续？输入 YES: " confirm
   if [[ "${confirm}" != "YES" ]]; then
     echo "已取消。"
     exit 0
   fi
-  po0_render_apply_commands "${client_ip}" "${selected_codes[@]}" | po0_run_rendered_commands
-  po0_save_config "${selected_codes[@]}"
-  po0_install_systemd_service
+  cn_render_apply_commands "${client_ip}" "${selected_codes[@]}" | cn_run_rendered_commands
+  cn_save_config "${selected_codes[@]}"
+  cn_install_systemd_service
   echo "规则已应用。"
-  echo "已保存地区配置，重启后会由 ${PO0_SERVICE_NAME} 自动恢复。"
+  echo "已保存地区配置，重启后会由 ${CN_SERVICE_NAME} 自动恢复。"
 }
 
 restore_rules() {
   local update_mode="$1"
   local -a saved_codes
-  po0_require_root
-  po0_require_commands
+  cn_require_root
+  cn_require_commands
   prepare_data_for_mode "${update_mode}"
 
   saved_codes=()
   while IFS= read -r code; do
     [[ -n "${code}" ]] && saved_codes+=("${code}")
-  done < <(po0_load_config_codes)
+  done < <(cn_load_config_codes)
 
   if [[ "${#saved_codes[@]}" -eq 0 ]]; then
     echo "配置文件中没有地区代码。" >&2
     exit 1
   fi
 
-  po0_render_apply_commands "" "${saved_codes[@]}" | po0_run_rendered_commands
+  cn_render_apply_commands "" "${saved_codes[@]}" | cn_run_rendered_commands
   echo "已按保存配置恢复规则：${saved_codes[*]}"
 }
 
 status_rules() {
-  po0_require_root
-  echo "== ipset: ${PO0_SET_NAME} =="
+  cn_require_root
+  echo "== ipset: ${CN_SET_NAME} =="
   if command -v ipset >/dev/null 2>&1; then
-    ipset list "${PO0_SET_NAME}" 2>/dev/null || true
+    ipset list "${CN_SET_NAME}" 2>/dev/null || true
   else
     echo "ipset 未安装"
   fi
   echo
-  echo "== iptables chain: ${PO0_CHAIN_NAME} =="
+  echo "== iptables chain: ${CN_CHAIN_NAME} =="
   if command -v iptables >/dev/null 2>&1; then
-    iptables -S "${PO0_CHAIN_NAME}" 2>/dev/null || true
+    iptables -S "${CN_CHAIN_NAME}" 2>/dev/null || true
   else
     echo "iptables 未安装"
   fi
-  po0_show_persistence_status
+  cn_show_persistence_status
 }
 
 clear_rules() {
-  po0_require_root
-  po0_require_commands
-  po0_render_clear_commands | po0_run_rendered_commands
-  po0_disable_systemd_service
+  cn_require_root
+  cn_require_commands
+  cn_render_clear_commands | cn_run_rendered_commands
+  cn_disable_systemd_service
   echo "已清除本脚本管理的规则。"
 }
 
@@ -274,7 +274,7 @@ main() {
     update-data)
       parse_update_mode required "$@"
       prepare_data_for_mode "${UPDATE_MODE}"
-      echo "数据已同步到：${PO0_RUNTIME_DIR}"
+      echo "数据已同步到：${CN_RUNTIME_DIR}"
       ;;
     status) status_rules ;;
     clear) clear_rules ;;

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare local province/city CIDR data for the po0 whitelist script."""
+"""Prepare local province/city CIDR data for the china-region-whitelist script."""
 
 from __future__ import annotations
 
