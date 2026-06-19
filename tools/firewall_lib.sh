@@ -20,6 +20,8 @@ cn_python() {
     python3 "$@"
   elif command -v python >/dev/null 2>&1; then
     python "$@"
+  elif [[ "${EUID}" -eq 0 ]] && cn_install_python; then
+    python3 "$@"
   else
     echo "未找到 python3/python，无法读取本地地区数据。" >&2
     return 127
@@ -305,6 +307,30 @@ cn_install_dependencies() {
     echo "未识别到 apt-get/dnf/yum/apk/zypper，无法自动安装 iptables/ipset。" >&2
     return 1
   fi
+}
+
+cn_install_python() {
+  echo "检测到缺少 python3，开始使用系统默认软件源自动安装..." >&2
+
+  if command -v apt-get >/dev/null 2>&1; then
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    apt-get install -y python3
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y python3
+  elif command -v yum >/dev/null 2>&1; then
+    yum install -y python3
+  elif command -v apk >/dev/null 2>&1; then
+    apk add --no-cache python3
+  elif command -v zypper >/dev/null 2>&1; then
+    zypper --non-interactive refresh || true
+    zypper --non-interactive install python3
+  else
+    echo "未识别到 apt-get/dnf/yum/apk/zypper，无法自动安装 python3。" >&2
+    return 1
+  fi
+
+  command -v python3 >/dev/null 2>&1
 }
 
 cn_require_commands() {

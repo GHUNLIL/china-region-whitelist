@@ -154,6 +154,17 @@ class FirewallLibTests(unittest.TestCase):
         self.assertIn("zypper --non-interactive install iptables ipset", script)
         self.assertIn("cn_install_dependencies", script)
 
+    def test_firewall_lib_auto_installs_missing_python3(self):
+        script = FIREWALL_LIB.read_text(encoding="utf-8")
+
+        self.assertIn("cn_install_python()", script)
+        self.assertIn("apt-get install -y python3", script)
+        self.assertIn("dnf install -y python3", script)
+        self.assertIn("yum install -y python3", script)
+        self.assertIn("apk add --no-cache python3", script)
+        self.assertIn("zypper --non-interactive install python3", script)
+        self.assertIn("elif [[ \"${EUID}\" -eq 0 ]] && cn_install_python", script)
+
     def test_install_script_supports_update_and_restore_modes(self):
         script = INSTALL_SH.read_text(encoding="utf-8")
 
@@ -186,6 +197,14 @@ class FirewallLibTests(unittest.TestCase):
         self.assertIn("CN_GITHUB_PROXY:-https://gh-proxy.com/", bootstrap)
         self.assertIn("https://gh-proxy.com/https://raw.githubusercontent.com", readme)
         self.assertIn("bash <(curl -fsSL", readme)
+
+    def test_bootstrap_cleanup_trap_is_set_u_safe(self):
+        bootstrap = BOOTSTRAP_SH.read_text(encoding="utf-8")
+
+        self.assertIn('BOOTSTRAP_WORK_DIR=""', bootstrap)
+        self.assertIn('BOOTSTRAP_WORK_DIR="$(mktemp -d)"', bootstrap)
+        self.assertIn('${BOOTSTRAP_WORK_DIR:-}', bootstrap)
+        self.assertNotIn('trap \'rm -rf "${work_dir}"\' EXIT', bootstrap)
 
     def test_firewall_lib_detects_and_persists_tunnel_interfaces(self):
         script = FIREWALL_LIB.read_text(encoding="utf-8")

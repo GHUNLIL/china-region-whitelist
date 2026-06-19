@@ -7,6 +7,7 @@ REPO_BRANCH="${CN_REPO_BRANCH:-main}"
 INSTALL_DIR="${CN_INSTALL_DIR:-/opt/china-region-whitelist}"
 GITHUB_PROXY="${CN_GITHUB_PROXY:-https://gh-proxy.com/}"
 ARCHIVE_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}/archive/refs/heads/${REPO_BRANCH}.tar.gz"
+BOOTSTRAP_WORK_DIR=""
 
 usage() {
   cat <<'EOF'
@@ -118,11 +119,11 @@ main() {
   require_command tar
   require_command mktemp
 
-  local work_dir archive_path source_dir
-  work_dir="$(mktemp -d)"
-  archive_path="${work_dir}/repo.tar.gz"
-  source_dir="${work_dir}/source"
-  trap 'rm -rf "${work_dir}"' EXIT
+  local archive_path source_dir
+  BOOTSTRAP_WORK_DIR="$(mktemp -d)"
+  archive_path="${BOOTSTRAP_WORK_DIR}/repo.tar.gz"
+  source_dir="${BOOTSTRAP_WORK_DIR}/source"
+  trap '[[ -n "${BOOTSTRAP_WORK_DIR:-}" ]] && rm -rf "${BOOTSTRAP_WORK_DIR}"' EXIT
 
   mkdir -p "${source_dir}"
   download_archive "${archive_path}"
