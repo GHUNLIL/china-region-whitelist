@@ -66,7 +66,7 @@ split_user_list() {
 read_from_tty() {
   local prompt="$1"
   local value
-  if [[ "${CN_READ_FROM_STDIN:-0}" != "1" && -r /dev/tty ]]; then
+  if [[ "${CN_READ_FROM_STDIN:-0}" != "1" && -r /dev/tty && ( -t 0 || -t 2 ) ]]; then
     read -r -p "${prompt}" value < /dev/tty
   else
     printf '%s' "${prompt}" >&2
@@ -258,6 +258,39 @@ join_by_comma() {
 
 join_by_semicolon() {
   join_by_delim ";" "$@"
+}
+
+count_all_provinces() {
+  cn_all_province_codes | awk 'END {print NR + 0}'
+}
+
+codes_summary() {
+  local -a codes=("$@")
+  local total
+  total="$(count_all_provinces)"
+  if [[ "${#codes[@]}" -eq "${total}" && "${total}" -gt 0 ]]; then
+    printf '全国'
+  else
+    printf '%s 个省份' "${#codes[@]}"
+  fi
+}
+
+asns_summary() {
+  local -a asns=("$@")
+  if [[ "${#asns[@]}" -eq 0 ]]; then
+    printf '未配置'
+  else
+    printf '%s' "$(join_by_delim " " "${asns[@]}")"
+  fi
+}
+
+port_policies_summary() {
+  local -a policies=("$@")
+  if [[ "${#policies[@]}" -eq 0 ]]; then
+    printf '未配置'
+  else
+    printf '%s 条' "${#policies[@]}"
+  fi
 }
 
 code_at_index() {
@@ -464,12 +497,251 @@ interactive_select_port_policies() {
   done
 }
 
+pause_visual() {
+  local message="${1:-按回车返回...}"
+  read_from_tty "${message}" >/dev/null
+}
+
+codes_detail() {
+  local -a codes=("$@")
+  local -a names
+  local code name total
+  total="$(count_all_provinces)"
+  if [[ "${#codes[@]}" -eq "${total}" && "${total}" -gt 0 ]]; then
+    printf '全国'
+    return
+  fi
+  names=()
+  for code in "${codes[@]}"; do
+    name="$(cn_province_name "${code}")"
+    names+=("${name:-${code}}")
+  done
+  join_by_delim " " "${names[@]}"
+}
+
+edit_global_codes_visual() {
+  interactive_select_codes
+  CONFIG_CODES=()
+  if ((${#SELECTED_CODES[@]} > 0)); then
+    CONFIG_CODES=("${SELECTED_CODES[@]}")
+  fi
+}
+
+edit_global_asns_visual() {
+  interactive_select_asns
+  CONFIG_ASNS=()
+  if ((${#SELECTED_ASNS[@]} > 0)); then
+    CONFIG_ASNS=("${SELECTED_ASNS[@]}")
+  fi
+}
+
+set_config_port_policies_from_text() {
+  local policies="$1"
+  local raw_policy
+  local -a policy_items next
+  CONFIG_PORT_POLICIES=()
+  policies="${policies//；/;}"
+  [[ -n "$(cn_trim "${policies}")" ]] || return 0
+  cn_validate_port_policies "${policies}"
+  IFS=';' read -r -a policy_items <<<"${policies}"
+  next=()
+  for raw_policy in "${policy_items[@]}"; do
+    raw_policy="$(cn_trim "${raw_policy}")"
+    [[ -n "${raw_policy}" ]] && next+=("${raw_policy}")
+  done
+  if ((${#next[@]} > 0)); then
+    CONFIG_PORT_POLICIES=("${next[@]}")
+  fi
+}
+
+manual_edit_port_policies_visual() {
+  read_manual_port_policies "完整端口策略（可空）: "
+  set_config_port_policies_from_text "${SELECTED_PORT_POLICIES}"
+}
+
+add_port_policy_visual() {
+  if build_port_policy_visual; then
+    CONFIG_PORT_POLICIES+=("${PORT_POLICY_ITEM}")
+    printf '已添加：%s\n' "${PORT_POLICY_ITEM}" >&2
+    pause_visual
+  fi
+}
+
+choose_port_policy_index() {
+  CHOSEN_PORT_POLICY_INDEX=""
+  if [[ "${#CONFIG_PORT_POLICIES[@]}" -eq 0 ]]; then
+    printf '当前没有端口白名单。\n' >&2
+    pause_visual
+    return 1
+  fi
+
+  local -a menu_items
+  local i
+  menu_items=()
+  for ((i = 0; i < ${#CONFIG_PORT_POLICIES[@]}; i++)); do
+    menu_items+=("$((i + 1)). ${CONFIG_PORT_POLICIES[$i]}" "${i}")
+  done
+  menu_items+=("取消" "cancel")
+  visual_single_select "选择端口白名单" "${menu_items[@]}"
+  [[ "${VISUAL_SELECTED_VALUE}" != "cancel" ]] || return 1
+  CHOSEN_PORT_POLICY_INDEX="${VISUAL_SELECTED_VALUE}"
+}
+
+edit_port_policy_visual() {
+  local index
+  choose_port_policy_index || return 0
+  index="${CHOSEN_PORT_POLICY_INDEX}"
+  printf '正在修改：%s\n' "${CONFIG_PORT_POLICIES[$index]}" >&2
+  if build_port_policy_visual; then
+    CONFIG_PORT_POLICIES[$index]="${PORT_POLICY_ITEM}"
+    printf '已修改为：%s\n' "${PORT_POLICY_ITEM}" >&2
+    pause_visual
+  fi
+}
+
+delete_port_policy_visual() {
+  local index i
+  local -a next
+  choose_port_policy_index || return 0
+  index="${CHOSEN_PORT_POLICY_INDEX}"
+  next=()
+  for ((i = 0; i < ${#CONFIG_PORT_POLICIES[@]}; i++)); do
+    [[ "${i}" -eq "${index}" ]] && continue
+    next+=("${CONFIG_PORT_POLICIES[$i]}")
+  done
+  if ((${#next[@]} > 0)); then
+    CONFIG_PORT_POLICIES=("${next[@]}")
+  else
+    CONFIG_PORT_POLICIES=()
+  fi
+  printf '已删除端口白名单。\n' >&2
+  pause_visual
+}
+
+config_editor_title() {
+  local codes_text asns_text ports_text
+  if [[ "${#CONFIG_CODES[@]}" -gt 0 ]]; then
+    codes_text="$(codes_summary "${CONFIG_CODES[@]}")"
+  else
+    codes_text="未配置"
+  fi
+  if [[ "${#CONFIG_ASNS[@]}" -gt 0 ]]; then
+    asns_text="$(asns_summary "${CONFIG_ASNS[@]}")"
+  else
+    asns_text="未配置"
+  fi
+  if [[ "${#CONFIG_PORT_POLICIES[@]}" -gt 0 ]]; then
+    ports_text="$(port_policies_summary "${CONFIG_PORT_POLICIES[@]}")"
+  else
+    ports_text="未配置"
+  fi
+  cat <<EOF
+白名单配置主界面
+
+全局白名单：${codes_text}
+全局 ASN：${asns_text}
+端口白名单：${ports_text}
+
+端口白名单优先于全局白名单生效。
+EOF
+}
+
+show_config_visual() {
+  visual_clear_screen
+  printf '当前配置\n\n' >&2
+  if [[ "${#CONFIG_CODES[@]}" -gt 0 ]]; then
+    printf '全局白名单：%s\n' "$(codes_detail "${CONFIG_CODES[@]}")" >&2
+  else
+    printf '全局白名单：未配置\n' >&2
+  fi
+  if [[ "${#CONFIG_ASNS[@]}" -gt 0 ]]; then
+    printf '全局 ASN：%s\n' "$(asns_summary "${CONFIG_ASNS[@]}")" >&2
+  else
+    printf '全局 ASN：未配置\n' >&2
+  fi
+  if [[ "${#CONFIG_PORT_POLICIES[@]}" -gt 0 ]]; then
+    printf '端口白名单：\n' >&2
+    local i
+    for ((i = 0; i < ${#CONFIG_PORT_POLICIES[@]}; i++)); do
+      printf '  %d. %s\n' "$((i + 1))" "${CONFIG_PORT_POLICIES[$i]}" >&2
+    done
+  else
+    printf '端口白名单：未配置\n' >&2
+  fi
+  printf '\n端口白名单优先于全局白名单。\n' >&2
+  pause_visual
+}
+
+interactive_config_editor() {
+  CONFIG_CODES=()
+  CONFIG_ASNS=()
+  CONFIG_PORT_POLICIES=()
+
+  local title
+  while true; do
+    title="$(config_editor_title)"
+    visual_single_select \
+      "${title}" \
+      "编辑全局白名单（省份/全国）" "edit_global" \
+      "编辑全局 ASN 白名单" "edit_asn" \
+      "新增端口白名单" "add_port" \
+      "修改端口白名单" "edit_port" \
+      "删除端口白名单" "delete_port" \
+      "手动编辑全部端口白名单" "manual_ports" \
+      "查看当前配置" "view" \
+      "完成并继续" "done"
+    case "${VISUAL_SELECTED_VALUE}" in
+      edit_global)
+        edit_global_codes_visual
+        ;;
+      edit_asn)
+        edit_global_asns_visual
+        ;;
+      add_port)
+        add_port_policy_visual
+        ;;
+      edit_port)
+        edit_port_policy_visual
+        ;;
+      delete_port)
+        delete_port_policy_visual
+        ;;
+      manual_ports)
+        manual_edit_port_policies_visual
+        ;;
+      view)
+        show_config_visual
+        ;;
+      done)
+        if [[ "${#CONFIG_CODES[@]}" -eq 0 ]]; then
+          printf '请先配置全局白名单，至少选择一个省份或全国。\n' >&2
+          pause_visual
+          continue
+        fi
+        SELECTED_CODES=("${CONFIG_CODES[@]}")
+        SELECTED_ASNS=()
+        if ((${#CONFIG_ASNS[@]} > 0)); then
+          SELECTED_ASNS=("${CONFIG_ASNS[@]}")
+        fi
+        if ((${#CONFIG_PORT_POLICIES[@]} > 0)); then
+          SELECTED_PORT_POLICIES="$(join_by_semicolon "${CONFIG_PORT_POLICIES[@]}")"
+        else
+          SELECTED_PORT_POLICIES=""
+        fi
+        return
+        ;;
+    esac
+  done
+}
+
 append_unique_forward_iface() {
   local candidate="$1"
   local existing
-  for existing in "${SELECTED_FORWARD_IFACES[@]}"; do
-    [[ "${existing}" == "${candidate}" ]] && return 0
-  done
+  if ((${#SELECTED_FORWARD_IFACES[@]} > 0)); then
+    for existing in "${SELECTED_FORWARD_IFACES[@]}"; do
+      [[ "${existing}" == "${candidate}" ]] && return 0
+    done
+  fi
   SELECTED_FORWARD_IFACES+=("${candidate}")
 }
 
@@ -611,13 +883,25 @@ run_apply_or_dry_run() {
   local -a selected_forward_ifaces
   local selected_forward_mode selected_forward_ifaces_text selected_asns_text selected_port_policies
   prepare_data_for_mode "${update_mode}"
-  interactive_select_codes
-  selected_codes=("${SELECTED_CODES[@]}")
+  SELECTED_CODES=()
+  SELECTED_ASNS=()
+  SELECTED_PORT_POLICIES=""
+  if visual_menu_available; then
+    interactive_config_editor
+  else
+    interactive_select_codes
+    interactive_select_asns
+    interactive_select_port_policies
+  fi
+
+  selected_codes=()
+  if ((${#SELECTED_CODES[@]} > 0)); then
+    selected_codes=("${SELECTED_CODES[@]}")
+  fi
   if [[ "${#selected_codes[@]}" -eq 0 ]]; then
     echo "未选择任何省份。" >&2
     exit 1
   fi
-  interactive_select_asns
   selected_asns=()
   if ((${#SELECTED_ASNS[@]} > 0)); then
     selected_asns=("${SELECTED_ASNS[@]}")
@@ -626,7 +910,6 @@ run_apply_or_dry_run() {
   if ((${#selected_asns[@]} > 0)); then
     selected_asns_text="${selected_asns[*]}"
   fi
-  interactive_select_port_policies
   selected_port_policies="${SELECTED_PORT_POLICIES}"
   interactive_select_forward_interfaces
   selected_forward_mode="${SELECTED_FORWARD_MODE}"
