@@ -30,7 +30,6 @@ Record file responsibilities, test-first order, and verification commands.
 - Create: `tools/prepare_data.py`
 - Create: `data/regions.json`
 - Create: `data/regions/*.txt`
-- Create: `vendor/ipipfree.ipdb`
 
 - [ ] **Step 1: Create local data directories**
 
@@ -40,7 +39,7 @@ Create `data/regions` and `vendor`.
 
 Use GitHub only during project preparation, not on the po0 server.
 
-- [ ] **Step 3: Copy the local `ipipfree.ipdb` reference file into `vendor/ipipfree.ipdb`**
+- [ ] **Step 3: Optionally copy a local `ipipfree.ipdb` reference file with `--ipdb` when preparing private bundles**
 
 Keep it as a local reference asset.
 

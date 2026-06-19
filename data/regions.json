@@ -1,5 +1,7 @@
 {
   "source": "https://github.com/metowolf/iplist/blob/master/docs/cncity.md",
+  "index_url": "https://raw.githubusercontent.com/metowolf/iplist/master/docs/cncity.md",
+  "data_base_url": "https://raw.githubusercontent.com/metowolf/iplist/master/data/cncity",
   "generated_by": "tools/prepare_data.py",
   "provinces": [
     {

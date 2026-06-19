@@ -1,0 +1,5 @@
+* text=auto
+data/regions/*.txt text eol=lf
+data/*.md text eol=lf
+data/*.json text eol=lf
+

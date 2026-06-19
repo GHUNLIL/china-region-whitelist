@@ -9,13 +9,20 @@ usage() {
 po0 省/市白名单一键脚本
 
 用法：
-  ./install.sh apply     交互选择地区并应用防火墙
-  ./install.sh dry-run   交互选择地区，只打印将执行的命令
-  ./install.sh status    查看当前托管规则
-  ./install.sh clear     清除本脚本创建的规则和 ipset
+  ./install.sh apply [--update|--offline|--update-optional]
+                         更新数据、交互选择地区、应用防火墙并配置开机恢复
+  ./install.sh dry-run [--update|--offline|--update-optional]
+                         交互选择地区，只打印将执行的命令
+  ./install.sh restore [--update|--offline|--update-optional]
+                         使用上次保存的地区配置重新应用规则
+  ./install.sh update-data
+                         只同步最新地区 CIDR 数据到 /var/lib/po0-region-whitelist
+  ./install.sh status    查看当前托管规则和开机恢复状态
+  ./install.sh clear     清除本脚本创建的规则、保存配置和 systemd 服务
 
 说明：
   apply 会让未命中白名单的所有入站端口全部拒绝。
+  apply/dry-run 默认先同步最新上游数据；如需离线使用仓库内数据，加 --offline。
   建议先运行 dry-run，确认地区和命令后再 apply。
 EOF
 }
@@ -122,9 +129,51 @@ confirm_client_ip() {
   esac
 }
 
+parse_update_mode() {
+  UPDATE_MODE="$1"
+  shift || true
+  local arg
+  for arg in "$@"; do
+    case "${arg}" in
+      --update) UPDATE_MODE="required" ;;
+      --offline|--no-update) UPDATE_MODE="offline" ;;
+      --update-optional) UPDATE_MODE="optional" ;;
+      *)
+        echo "未知参数：${arg}" >&2
+        usage
+        exit 2
+        ;;
+    esac
+  done
+}
+
+prepare_data_for_mode() {
+  local mode="$1"
+  case "${mode}" in
+    required)
+      po0_update_runtime_data
+      ;;
+    optional)
+      if ! po0_update_runtime_data; then
+        echo "同步上游数据失败，将尝试使用已有运行时数据或仓库内置数据。" >&2
+        po0_use_runtime_data_if_available
+      fi
+      ;;
+    offline)
+      po0_use_runtime_data_if_available
+      ;;
+    *)
+      echo "未知更新模式：${mode}" >&2
+      exit 2
+      ;;
+  esac
+}
+
 run_apply_or_dry_run() {
   local dry_run="$1"
+  local update_mode="$2"
   local -a selected_codes
+  prepare_data_for_mode "${update_mode}"
   interactive_select_codes
   selected_codes=("${SELECTED_CODES[@]}")
   if [[ "${#selected_codes[@]}" -eq 0 ]]; then
@@ -153,7 +202,31 @@ run_apply_or_dry_run() {
     exit 0
   fi
   po0_render_apply_commands "${client_ip}" "${selected_codes[@]}" | po0_run_rendered_commands
+  po0_save_config "${selected_codes[@]}"
+  po0_install_systemd_service
   echo "规则已应用。"
+  echo "已保存地区配置，重启后会由 ${PO0_SERVICE_NAME} 自动恢复。"
+}
+
+restore_rules() {
+  local update_mode="$1"
+  local -a saved_codes
+  po0_require_root
+  po0_require_commands
+  prepare_data_for_mode "${update_mode}"
+
+  saved_codes=()
+  while IFS= read -r code; do
+    [[ -n "${code}" ]] && saved_codes+=("${code}")
+  done < <(po0_load_config_codes)
+
+  if [[ "${#saved_codes[@]}" -eq 0 ]]; then
+    echo "配置文件中没有地区代码。" >&2
+    exit 1
+  fi
+
+  po0_render_apply_commands "" "${saved_codes[@]}" | po0_run_rendered_commands
+  echo "已按保存配置恢复规则：${saved_codes[*]}"
 }
 
 status_rules() {
@@ -171,20 +244,38 @@ status_rules() {
   else
     echo "iptables 未安装"
   fi
+  po0_show_persistence_status
 }
 
 clear_rules() {
   po0_require_root
   po0_require_commands
   po0_render_clear_commands | po0_run_rendered_commands
+  po0_disable_systemd_service
   echo "已清除本脚本管理的规则。"
 }
 
 main() {
   local command="${1:-apply}"
+  shift || true
   case "${command}" in
-    apply) run_apply_or_dry_run 0 ;;
-    dry-run) run_apply_or_dry_run 1 ;;
+    apply)
+      parse_update_mode required "$@"
+      run_apply_or_dry_run 0 "${UPDATE_MODE}"
+      ;;
+    dry-run)
+      parse_update_mode required "$@"
+      run_apply_or_dry_run 1 "${UPDATE_MODE}"
+      ;;
+    restore)
+      parse_update_mode optional "$@"
+      restore_rules "${UPDATE_MODE}"
+      ;;
+    update-data)
+      parse_update_mode required "$@"
+      prepare_data_for_mode "${UPDATE_MODE}"
+      echo "数据已同步到：${PO0_RUNTIME_DIR}"
+      ;;
     status) status_rules ;;
     clear) clear_rules ;;
     -h|--help|help) usage ;;

@@ -125,6 +125,33 @@ class FirewallLibTests(unittest.TestCase):
         self.assertIn("zypper --non-interactive install iptables ipset", script)
         self.assertIn("po0_install_dependencies", script)
 
+    def test_install_script_supports_update_and_restore_modes(self):
+        script = INSTALL_SH.read_text(encoding="utf-8")
+
+        self.assertIn("update-data", script)
+        self.assertIn("restore", script)
+        self.assertIn("--update-optional", script)
+        self.assertIn("po0_save_config", script)
+        self.assertIn("po0_install_systemd_service", script)
+
+    def test_firewall_lib_configures_systemd_persistence(self):
+        script = FIREWALL_LIB.read_text(encoding="utf-8")
+
+        self.assertIn("PO0_CONFIG_FILE", script)
+        self.assertIn("PO0_RUNTIME_DIR", script)
+        self.assertIn("po0-region-whitelist.service", script)
+        self.assertIn("systemctl enable", script)
+        self.assertIn("restore --update-optional", script)
+        self.assertIn("--output-dir", script)
+
+    def test_prepare_data_can_refresh_and_force_downloads(self):
+        script = (ROOT / "tools" / "prepare_data.py").read_text(encoding="utf-8")
+
+        self.assertIn("--refresh-index", script)
+        self.assertIn("--force", script)
+        self.assertIn("DEFAULT_INDEX_URL", script)
+        self.assertIn("DEFAULT_DATA_BASE_URL", script)
+
 
 if __name__ == "__main__":
     unittest.main()
