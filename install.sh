@@ -98,6 +98,11 @@ interactive_select_codes() {
 
     echo >&2
     cn_show_cities "${province_code}" >&2
+    if [[ -z "$(cn_list_cities "${province_code}")" ]]; then
+      echo "该地区暂无市级细分，已自动选择全市/全省。" >&2
+      SELECTED_CODES+=("${province_code}")
+      continue
+    fi
     echo "输入 0/全省/全市，或输入城市编号/城市名称，多个用空格/逗号分隔，例如：1 2 深圳市 广州市" >&2
     city_input="$(read_from_tty "城市: ")"
     [[ -n "${city_input}" ]] || {

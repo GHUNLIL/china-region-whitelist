@@ -214,6 +214,7 @@ class FirewallLibTests(unittest.TestCase):
         self.assertIn("cn_save_config", script)
         self.assertIn("cn_install_systemd_service", script)
         self.assertIn("interactive_select_forward_interfaces", script)
+        self.assertIn("已自动选择全市/全省", script)
 
     def test_firewall_lib_configures_systemd_persistence(self):
         script = FIREWALL_LIB.read_text(encoding="utf-8")
