@@ -66,13 +66,198 @@ split_user_list() {
 read_from_tty() {
   local prompt="$1"
   local value
-  if [[ -t 0 && -r /dev/tty ]]; then
+  if [[ "${CN_READ_FROM_STDIN:-0}" != "1" && -r /dev/tty ]]; then
     read -r -p "${prompt}" value < /dev/tty
   else
     printf '%s' "${prompt}" >&2
     read -r value <&3 || value=""
   fi
   printf '%s\n' "${value}"
+}
+
+visual_menu_available() {
+  [[ "${CN_VISUAL_MENU:-1}" != "0" && -r /dev/tty && ( -t 0 || -t 2 ) && "${TERM:-}" != "dumb" ]]
+}
+
+visual_clear_screen() {
+  printf '\033[H\033[J' >&2
+}
+
+visual_read_key() {
+  local key rest
+  IFS= read -rsn1 key < /dev/tty || key=""
+  if [[ "${key}" == $'\x1b' ]]; then
+    IFS= read -rsn2 -t 1 rest < /dev/tty || rest=""
+    key+="${rest}"
+  fi
+  printf '%s' "${key}"
+}
+
+visual_multi_select() {
+  local title="$1"
+  local allow_empty="$2"
+  shift 2
+  VISUAL_SELECTED_VALUES=()
+  VISUAL_SELECTED_LABELS=()
+
+  local -a labels values checked
+  while (($# > 0)); do
+    labels+=("$1")
+    values+=("$2")
+    checked+=(0)
+    shift 2
+  done
+
+  local current=0
+  local key selected_count i cursor mark
+  while true; do
+    visual_clear_screen
+    printf '%s\n' "${title}" >&2
+    printf '上/下键移动，空格勾选，回车确认。A 全选，C 清空。\n\n' >&2
+    for ((i = 0; i < ${#labels[@]}; i++)); do
+      cursor=" "
+      [[ "${i}" -eq "${current}" ]] && cursor=">"
+      mark="[ ]"
+      [[ "${checked[$i]}" -eq 1 ]] && mark="[x]"
+      printf '%s %s %s\n' "${cursor}" "${mark}" "${labels[$i]}" >&2
+    done
+
+    key="$(visual_read_key)"
+    case "${key}" in
+      $'\x1b[A'|k|K)
+        ((current > 0)) && current=$((current - 1))
+        ;;
+      $'\x1b[B'|j|J)
+        ((current < ${#labels[@]} - 1)) && current=$((current + 1))
+        ;;
+      " ")
+        if [[ "${checked[$current]}" -eq 1 ]]; then
+          checked[$current]=0
+        else
+          checked[$current]=1
+        fi
+        ;;
+      a|A)
+        for ((i = 0; i < ${#checked[@]}; i++)); do
+          checked[$i]=1
+        done
+        ;;
+      c|C)
+        for ((i = 0; i < ${#checked[@]}; i++)); do
+          checked[$i]=0
+        done
+        ;;
+      "")
+        selected_count=0
+        for ((i = 0; i < ${#checked[@]}; i++)); do
+          [[ "${checked[$i]}" -eq 1 ]] && selected_count=$((selected_count + 1))
+        done
+        if [[ "${selected_count}" -eq 0 && "${allow_empty}" != "1" ]]; then
+          printf '\n至少选择一项，按任意键继续。' >&2
+          IFS= read -rsn1 _ < /dev/tty || true
+          continue
+        fi
+        for ((i = 0; i < ${#checked[@]}; i++)); do
+          if [[ "${checked[$i]}" -eq 1 ]]; then
+            VISUAL_SELECTED_VALUES+=("${values[$i]}")
+            VISUAL_SELECTED_LABELS+=("${labels[$i]}")
+          fi
+        done
+        visual_clear_screen
+        return 0
+        ;;
+    esac
+  done
+}
+
+visual_single_select() {
+  local title="$1"
+  shift
+  VISUAL_SELECTED_VALUE=""
+  VISUAL_SELECTED_LABEL=""
+
+  local -a labels values
+  while (($# > 0)); do
+    labels+=("$1")
+    values+=("$2")
+    shift 2
+  done
+
+  local current=0
+  local key i cursor
+  while true; do
+    visual_clear_screen
+    printf '%s\n' "${title}" >&2
+    printf '上/下键移动，回车确认。\n\n' >&2
+    for ((i = 0; i < ${#labels[@]}; i++)); do
+      cursor=" "
+      [[ "${i}" -eq "${current}" ]] && cursor=">"
+      printf '%s %s\n' "${cursor}" "${labels[$i]}" >&2
+    done
+
+    key="$(visual_read_key)"
+    case "${key}" in
+      $'\x1b[A'|k|K)
+        ((current > 0)) && current=$((current - 1))
+        ;;
+      $'\x1b[B'|j|J)
+        ((current < ${#labels[@]} - 1)) && current=$((current + 1))
+        ;;
+      ""|" ")
+        VISUAL_SELECTED_VALUE="${values[$current]}"
+        VISUAL_SELECTED_LABEL="${labels[$current]}"
+        visual_clear_screen
+        return 0
+        ;;
+    esac
+  done
+}
+
+load_province_menu_options() {
+  PROVINCE_MENU_LABELS=()
+  PROVINCE_MENU_CODES=()
+  PROVINCE_MENU_NAMES=()
+
+  local index province_code name
+  while IFS=$'\t' read -r index province_code name; do
+    PROVINCE_MENU_LABELS+=("${index}. ${name}")
+    PROVINCE_MENU_CODES+=("${province_code}")
+    PROVINCE_MENU_NAMES+=("${name}")
+  done < <(cn_list_provinces)
+}
+
+append_unique_selected_code() {
+  local candidate="$1"
+  local existing
+  if ((${#SELECTED_CODES[@]} > 0)); then
+    for existing in "${SELECTED_CODES[@]}"; do
+      [[ "${existing}" == "${candidate}" ]] && return 0
+    done
+  fi
+  SELECTED_CODES+=("${candidate}")
+}
+
+join_by_delim() {
+  local delim="$1"
+  shift
+  local out="" item
+  for item in "$@"; do
+    [[ -n "${item}" ]] || continue
+    if [[ -z "${out}" ]]; then
+      out="${item}"
+    else
+      out+="${delim}${item}"
+    fi
+  done
+  printf '%s\n' "${out}"
+}
+
+join_by_comma() {
+  join_by_delim "," "$@"
+}
+
+join_by_semicolon() {
+  join_by_delim ";" "$@"
 }
 
 code_at_index() {
@@ -83,6 +268,28 @@ code_at_index() {
 
 interactive_select_codes() {
   SELECTED_CODES=()
+  if visual_menu_available; then
+    load_province_menu_options
+    local -a menu_items
+    local province_value province_code i
+    menu_items=("全国（中国大陆全部省级 IP）" "__ALL__")
+    for ((i = 0; i < ${#PROVINCE_MENU_LABELS[@]}; i++)); do
+      menu_items+=("${PROVINCE_MENU_LABELS[$i]}" "${PROVINCE_MENU_CODES[$i]}")
+    done
+
+    visual_multi_select "请选择整机默认白名单省份" 0 "${menu_items[@]}"
+    for province_value in "${VISUAL_SELECTED_VALUES[@]}"; do
+      if [[ "${province_value}" == "__ALL__" ]]; then
+        while IFS= read -r province_code; do
+          [[ -n "${province_code}" ]] && append_unique_selected_code "${province_code}"
+        done < <(cn_all_province_codes)
+      else
+        append_unique_selected_code "${province_value}"
+      fi
+    done
+    return
+  fi
+
   echo "请选择省/自治区/直辖市：" >&2
   cn_show_provinces >&2
   echo >&2
@@ -100,17 +307,25 @@ interactive_select_codes() {
     [[ -n "${province_selector}" ]] || continue
     if cn_is_all_china_selector "${province_selector}"; then
       while IFS= read -r province_code; do
-        [[ -n "${province_code}" ]] && SELECTED_CODES+=("${province_code}")
+        [[ -n "${province_code}" ]] && append_unique_selected_code "${province_code}"
       done < <(cn_all_province_codes)
     else
       province_code="$(cn_resolve_province "${province_selector}")"
-      SELECTED_CODES+=("${province_code}")
+      append_unique_selected_code "${province_code}"
     fi
   done < <(split_user_list "${province_input}")
 }
 
 interactive_select_asns() {
   SELECTED_ASNS=()
+  if visual_menu_available; then
+    visual_single_select \
+      "额外 ASN 白名单" \
+      "不添加 ASN 白名单" "skip" \
+      "输入 ASN 白名单" "input"
+    [[ "${VISUAL_SELECTED_VALUE}" == "skip" ]] && return 0
+  fi
+
   echo >&2
   echo "可选：额外 ASN 白名单，用于国外管理机或固定云厂商入口。" >&2
   echo "例如：AS16509 AS14061。留空则不添加 ASN 白名单。" >&2
@@ -126,20 +341,127 @@ interactive_select_asns() {
   done < <(split_user_list "${asn_input}")
 }
 
-interactive_select_port_policies() {
-  SELECTED_PORT_POLICIES=""
+read_manual_port_policies() {
+  local prompt="${1:-端口优先白名单（可空）: }"
+  local policy_input
+  policy_input="$(read_from_tty "${prompt}")"
+  policy_input="${policy_input//；/;}"
+  [[ -n "$(cn_trim "${policy_input}")" ]] || {
+    SELECTED_PORT_POLICIES=""
+    return 0
+  }
+  cn_validate_port_policies "${policy_input}"
+  SELECTED_PORT_POLICIES="${policy_input}"
+}
+
+interactive_select_port_policies_line() {
   echo >&2
   echo "可选：端口优先白名单。命中端口策略时，会先按该端口自己的白名单判断。" >&2
   echo "格式：端口=白名单；多条用英文或中文分号分隔。" >&2
   echo "示例：22=上海市,AS16509,1.2.3.4/32;10000-20000=广东省,江苏省" >&2
   echo "白名单可写：全国/中国、具体省份、AS12345、IPv4 或 IPv4 CIDR。留空则只使用整机默认白名单。" >&2
+  read_manual_port_policies "端口优先白名单（可空）: "
+}
 
-  local policy_input
-  policy_input="$(read_from_tty "端口优先白名单（可空）: ")"
-  policy_input="${policy_input//；/;}"
-  [[ -n "$(cn_trim "${policy_input}")" ]] || return 0
-  cn_validate_port_policies "${policy_input}"
-  SELECTED_PORT_POLICIES="${policy_input}"
+normalize_extra_policy_selectors() {
+  EXTRA_POLICY_SELECTORS=()
+  local extra_input="$1"
+  local selector asn
+  while IFS= read -r selector; do
+    selector="$(cn_trim "${selector}")"
+    [[ -n "${selector}" ]] || continue
+    if [[ "${selector}" =~ ^[Aa][Ss][0-9]+$ ]]; then
+      asn="$(cn_normalize_asn "${selector}")"
+      EXTRA_POLICY_SELECTORS+=("AS${asn}")
+    elif cn_validate_ipv4_cidr "${selector}"; then
+      EXTRA_POLICY_SELECTORS+=("${selector}")
+    else
+      echo "额外白名单只支持 ASN、IPv4 或 IPv4 CIDR：${selector}" >&2
+      return 1
+    fi
+  done < <(split_user_list "${extra_input}")
+}
+
+build_port_policy_visual() {
+  PORT_POLICY_ITEM=""
+  local port_spec extra_input selector_text i
+  local -a menu_items selectors
+
+  while true; do
+    port_spec="$(read_from_tty "端口或端口范围，例如 22 或 10000-20000: ")"
+    if cn_validate_port_spec "${port_spec}"; then
+      break
+    fi
+    echo "非法端口或端口范围：${port_spec}" >&2
+  done
+
+  load_province_menu_options
+  menu_items=("全国（中国大陆全部省级 IP）" "全国")
+  for ((i = 0; i < ${#PROVINCE_MENU_LABELS[@]}; i++)); do
+    menu_items+=("${PROVINCE_MENU_LABELS[$i]}" "${PROVINCE_MENU_NAMES[$i]}")
+  done
+  visual_multi_select "请选择端口 ${port_spec} 允许的国内省份（可空，后续可输入 ASN/IP）" 1 "${menu_items[@]}"
+  selectors=("${VISUAL_SELECTED_VALUES[@]}")
+
+  extra_input="$(read_from_tty "额外 ASN/IP/CIDR（可空，多个用空格或逗号分隔）: ")"
+  if [[ -n "$(cn_trim "${extra_input}")" ]]; then
+    normalize_extra_policy_selectors "${extra_input}"
+    selectors+=("${EXTRA_POLICY_SELECTORS[@]}")
+  fi
+
+  if [[ "${#selectors[@]}" -eq 0 ]]; then
+    echo "端口策略至少需要一个省份、ASN、IPv4 或 CIDR 白名单。" >&2
+    return 1
+  fi
+
+  selector_text="$(join_by_comma "${selectors[@]}")"
+  PORT_POLICY_ITEM="${port_spec}=${selector_text}"
+  cn_validate_port_policies "${PORT_POLICY_ITEM}"
+}
+
+interactive_select_port_policies() {
+  SELECTED_PORT_POLICIES=""
+  if ! visual_menu_available; then
+    interactive_select_port_policies_line
+    return
+  fi
+
+  local -a policies
+  local done_label
+  policies=()
+  while true; do
+    if [[ "${#policies[@]}" -eq 0 ]]; then
+      done_label="完成，不添加端口优先白名单"
+    else
+      done_label="完成，使用已添加的 ${#policies[@]} 条端口策略"
+    fi
+    visual_single_select \
+      "端口优先白名单" \
+      "添加一条端口策略" "add" \
+      "手动输入完整策略" "manual" \
+      "${done_label}" "done"
+    case "${VISUAL_SELECTED_VALUE}" in
+      add)
+        if build_port_policy_visual; then
+          policies+=("${PORT_POLICY_ITEM}")
+          printf '已添加：%s\n' "${PORT_POLICY_ITEM}" >&2
+          read_from_tty "按回车继续..." >/dev/null
+        fi
+        ;;
+      manual)
+        read_manual_port_policies "完整端口策略（可空）: "
+        return
+        ;;
+      done)
+        if ((${#policies[@]} > 0)); then
+          SELECTED_PORT_POLICIES="$(join_by_semicolon "${policies[@]}")"
+        else
+          SELECTED_PORT_POLICIES=""
+        fi
+        return
+        ;;
+    esac
+  done
 }
 
 append_unique_forward_iface() {
@@ -209,12 +531,37 @@ confirm_client_ip() {
     return
   fi
 
+  if visual_menu_available; then
+    visual_single_select \
+      "检测到当前 SSH 客户端 IP：${client_ip}" \
+      "加入本次白名单，避免断连" "yes" \
+      "不加入" "no"
+    [[ "${VISUAL_SELECTED_VALUE}" == "yes" ]] && echo "${client_ip}" || echo ""
+    return
+  fi
+
   echo "检测到当前 SSH 客户端 IP：${client_ip}" >&2
   read -r -p "是否临时加入本次白名单以避免断连？[Y/n] " answer
   case "${answer:-Y}" in
     y|Y|yes|YES) echo "${client_ip}" ;;
     *) echo "" ;;
   esac
+}
+
+confirm_apply_rules() {
+  echo "即将应用规则：未命中白名单的所有入站端口都会被拒绝。"
+  if visual_menu_available; then
+    visual_single_select \
+      "确认应用防火墙规则" \
+      "取消，不应用规则" "no" \
+      "应用规则" "yes"
+    [[ "${VISUAL_SELECTED_VALUE}" == "yes" ]]
+    return
+  fi
+
+  local confirm
+  read -r -p "确认继续？输入 YES: " confirm
+  [[ "${confirm}" == "YES" ]]
 }
 
 parse_update_mode() {
@@ -271,7 +618,10 @@ run_apply_or_dry_run() {
     exit 1
   fi
   interactive_select_asns
-  selected_asns=("${SELECTED_ASNS[@]}")
+  selected_asns=()
+  if ((${#SELECTED_ASNS[@]} > 0)); then
+    selected_asns=("${SELECTED_ASNS[@]}")
+  fi
   selected_asns_text=""
   if ((${#selected_asns[@]} > 0)); then
     selected_asns_text="${selected_asns[*]}"
@@ -308,9 +658,7 @@ run_apply_or_dry_run() {
 
   cn_require_root
   cn_require_commands
-  echo "即将应用规则：未命中白名单的所有入站端口都会被拒绝。"
-  read -r -p "确认继续？输入 YES: " confirm
-  if [[ "${confirm}" != "YES" ]]; then
+  if ! confirm_apply_rules; then
     echo "已取消。"
     exit 0
   fi
