@@ -30,6 +30,7 @@ def run_firewall_lib(command: str) -> subprocess.CompletedProcess[str]:
         f"source {FIREWALL_LIB}; "
         f"DATA_DIR={FIXTURES}; "
         f"CN_REGIONS_TSV={FIXTURES / 'regions.tsv'}; "
+        f"CN_COUNTRY_FILE={FIXTURES / 'country' / 'CN.txt'}; "
         f"CN_ASN_CACHE_DIR={FIXTURES / 'asn'}; "
         f"{command}"
     )
@@ -52,6 +53,12 @@ class FirewallLibTests(unittest.TestCase):
             result.stdout.splitlines(),
             ["10.0.0.0/8", "192.0.2.0/24", "172.16.0.0/12"],
         )
+
+    def test_collects_country_cn_cidrs(self):
+        result = run_tool("collect-cidrs", "CN")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines(), ["198.18.0.0/15"])
 
     def test_renders_dry_run_commands_with_current_client_ip(self):
         result = run_tool("render-apply", "--client-ip", "198.51.100.88", "990000")
@@ -250,6 +257,26 @@ class FirewallLibTests(unittest.TestCase):
         self.assertIn("nft add chain inet china_region_whitelist input", result.stdout)
         self.assertNotIn("nft add chain inet china_region_whitelist forward", result.stdout)
 
+    def test_firewall_lib_uses_country_cn_for_global_china(self):
+        result = run_firewall_lib(
+            "CN_FIREWALL_BACKEND=nft cn_render_apply_commands '' all '' '' '' CN"
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("nft add element inet china_region_whitelist allowed_v4 '{ 198.18.0.0/15 }'", result.stdout)
+        self.assertNotIn("nft add element inet china_region_whitelist allowed_v4 '{ 10.0.0.0/8 }'", result.stdout)
+        self.assertNotIn("nft add element inet china_region_whitelist allowed_v4 '{ 172.16.0.0/12 }'", result.stdout)
+
+    def test_firewall_lib_uses_country_cn_for_port_policy_china(self):
+        result = run_firewall_lib(
+            "CN_FIREWALL_BACKEND=nft cn_render_apply_commands '' all '' '' '22=全国' 990000"
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("nft add element inet china_region_whitelist allowed_v4 '{ 10.0.0.0/8 }'", result.stdout)
+        self.assertIn("nft add element inet china_region_whitelist port_policy_1_v4 '{ 198.18.0.0/15 }'", result.stdout)
+        self.assertNotIn("nft add element inet china_region_whitelist port_policy_1_v4 '{ 10.0.0.0/8 }'", result.stdout)
+
     def test_firewall_lib_renders_nft_port_policy_before_global_rules(self):
         result = run_firewall_lib(
             "CN_FIREWALL_BACKEND=nft cn_render_apply_commands '' all '' AS64500 '22=测试省;10000-20000=AS64500,198.51.100.7/32' 990000"
@@ -305,6 +332,8 @@ class FirewallLibTests(unittest.TestCase):
         self.assertIn("DEFAULT_INDEX_URL", script)
         self.assertIn("DEFAULT_DATA_BASE_URL", script)
         self.assertIn("write_regions_tsv", script)
+        self.assertIn("COUNTRY_FILE", script)
+        self.assertIn("write_country_file", script)
 
 
 if __name__ == "__main__":

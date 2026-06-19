@@ -76,10 +76,16 @@ def normalize_name(name: str) -> str:
 
 
 def find_region_file(metadata: dict, code: str) -> str:
+    if is_china_selector(code):
+        return str(metadata.get("country", {}).get("file", "country/CN.txt"))
     for province in metadata["provinces"]:
         if str(province["code"]) == code:
             return str(province["file"])
     raise SystemExit(f"Unknown region code: {code}")
+
+
+def is_china_selector(selector: str) -> bool:
+    return selector in {"CN", "cn", "中国", "全国", "中国大陆", "大陆", "all", "ALL"}
 
 
 def collect_cidrs(metadata: dict, data_dir: Path, codes: list[str]) -> list[str]:

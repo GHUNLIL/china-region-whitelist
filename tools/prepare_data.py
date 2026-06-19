@@ -16,6 +16,9 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_INDEX = ROOT / "data" / "cncity.md"
 DEFAULT_INDEX_URL = "https://raw.githubusercontent.com/metowolf/iplist/master/docs/cncity.md"
 DEFAULT_DATA_BASE_URL = "https://raw.githubusercontent.com/metowolf/iplist/master/data/cncity"
+COUNTRY_CODE = "100000"
+COUNTRY_FILE = "country/CN.txt"
+COUNTRY_ORIGINAL_URL = "https://metowolf.github.io/iplist/data/cncity/100000.txt"
 
 ROW_RE = re.compile(r"^\|([^|]+)\|([^|]+)\|$")
 CODE_RE = re.compile(r"/(\d{6})\.txt$")
@@ -85,6 +88,15 @@ def write_region_file(code: str, url: str, regions_dir: Path, force: bool, data_
     target.write_text(normalize_region_text(text), encoding="utf-8")
 
 
+def write_country_file(data_dir: Path, force: bool, data_base_url: str) -> None:
+    target = data_dir / COUNTRY_FILE
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists() and target.stat().st_size > 0 and not force:
+        return
+    text = download_text(region_url(COUNTRY_CODE, COUNTRY_ORIGINAL_URL, data_base_url))
+    target.write_text(normalize_region_text(text), encoding="utf-8")
+
+
 def iter_entries(provinces: list[dict[str, object]]):
     for province in provinces:
         yield province
@@ -147,6 +159,8 @@ def main() -> int:
         raise SystemExit("No provinces parsed from cncity index")
 
     if not args.skip_download:
+        print(f"[country] {COUNTRY_CODE} 中国")
+        write_country_file(data_dir, args.force, args.data_base_url)
         entries = list(iter_entries(provinces))
         for index, entry in enumerate(entries, 1):
             print(f"[{index}/{len(entries)}] {entry['code']} {entry['name']}")
@@ -163,6 +177,12 @@ def main() -> int:
         "index_url": args.index_url,
         "data_base_url": args.data_base_url,
         "generated_by": "tools/prepare_data.py",
+        "country": {
+            "name": "中国",
+            "code": "CN",
+            "file": COUNTRY_FILE,
+            "url": region_url(COUNTRY_CODE, COUNTRY_ORIGINAL_URL, args.data_base_url),
+        },
         "provinces": provinces,
     }
     data_dir.mkdir(parents=True, exist_ok=True)

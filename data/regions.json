@@ -3,6 +3,12 @@
   "index_url": "https://raw.githubusercontent.com/metowolf/iplist/master/docs/cncity.md",
   "data_base_url": "https://raw.githubusercontent.com/metowolf/iplist/master/data/cncity",
   "generated_by": "tools/prepare_data.py",
+  "country": {
+    "name": "中国",
+    "code": "CN",
+    "file": "country/CN.txt",
+    "url": "https://raw.githubusercontent.com/metowolf/iplist/master/data/cncity/100000.txt"
+  },
   "provinces": [
     {
       "name": "北京市",

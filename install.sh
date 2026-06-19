@@ -229,8 +229,13 @@ load_province_menu_options() {
 append_unique_selected_code() {
   local candidate="$1"
   local existing
+  if cn_is_all_china_selector "${candidate}"; then
+    SELECTED_CODES=("CN")
+    return 0
+  fi
   if ((${#SELECTED_CODES[@]} > 0)); then
     for existing in "${SELECTED_CODES[@]}"; do
+      cn_is_all_china_selector "${existing}" && return 0
       [[ "${existing}" == "${candidate}" ]] && return 0
     done
   fi
@@ -260,15 +265,9 @@ join_by_semicolon() {
   join_by_delim ";" "$@"
 }
 
-count_all_provinces() {
-  cn_all_province_codes | awk 'END {print NR + 0}'
-}
-
 codes_summary() {
   local -a codes=("$@")
-  local total
-  total="$(count_all_provinces)"
-  if [[ "${#codes[@]}" -eq "${total}" && "${total}" -gt 0 ]]; then
+  if [[ "${#codes[@]}" -eq 1 ]] && cn_is_all_china_selector "${codes[0]}"; then
     printf '全国'
   else
     printf '%s 个省份' "${#codes[@]}"
@@ -304,8 +303,8 @@ interactive_select_codes() {
   if visual_menu_available; then
     load_province_menu_options
     local -a menu_items
-    local province_value province_code i
-    menu_items=("全国（中国大陆全部省级 IP）" "__ALL__")
+    local province_value i
+    menu_items=("全国（中国大陆 CN）" "__ALL__")
     for ((i = 0; i < ${#PROVINCE_MENU_LABELS[@]}; i++)); do
       menu_items+=("${PROVINCE_MENU_LABELS[$i]}" "${PROVINCE_MENU_CODES[$i]}")
     done
@@ -313,9 +312,7 @@ interactive_select_codes() {
     visual_multi_select "请选择整机默认白名单省份" 0 "${menu_items[@]}"
     for province_value in "${VISUAL_SELECTED_VALUES[@]}"; do
       if [[ "${province_value}" == "__ALL__" ]]; then
-        while IFS= read -r province_code; do
-          [[ -n "${province_code}" ]] && append_unique_selected_code "${province_code}"
-        done < <(cn_all_province_codes)
+        append_unique_selected_code "CN"
       else
         append_unique_selected_code "${province_value}"
       fi
@@ -326,7 +323,7 @@ interactive_select_codes() {
   echo "请选择省/自治区/直辖市：" >&2
   cn_show_provinces >&2
   echo >&2
-  echo "输入编号或省份名称，多个用空格/逗号分隔；输入 全国 表示中国大陆全部省级 IP。" >&2
+  echo "输入编号或省份名称，多个用空格/逗号分隔；输入 全国 表示中国大陆 CN 国家级 IP。" >&2
 
   local province_input
   province_input="$(read_from_tty "省份: ")"
@@ -339,9 +336,7 @@ interactive_select_codes() {
   while IFS= read -r province_selector; do
     [[ -n "${province_selector}" ]] || continue
     if cn_is_all_china_selector "${province_selector}"; then
-      while IFS= read -r province_code; do
-        [[ -n "${province_code}" ]] && append_unique_selected_code "${province_code}"
-      done < <(cn_all_province_codes)
+      append_unique_selected_code "CN"
     else
       province_code="$(cn_resolve_province "${province_selector}")"
       append_unique_selected_code "${province_code}"
@@ -429,7 +424,7 @@ build_port_policy_visual() {
   done
 
   load_province_menu_options
-  menu_items=("全国（中国大陆全部省级 IP）" "全国")
+  menu_items=("全国（中国大陆 CN）" "全国")
   for ((i = 0; i < ${#PROVINCE_MENU_LABELS[@]}; i++)); do
     menu_items+=("${PROVINCE_MENU_LABELS[$i]}" "${PROVINCE_MENU_NAMES[$i]}")
   done
@@ -505,9 +500,8 @@ pause_visual() {
 codes_detail() {
   local -a codes=("$@")
   local -a names
-  local code name total
-  total="$(count_all_provinces)"
-  if [[ "${#codes[@]}" -eq "${total}" && "${total}" -gt 0 ]]; then
+  local code name
+  if [[ "${#codes[@]}" -eq 1 ]] && cn_is_all_china_selector "${codes[0]}"; then
     printf '全国'
     return
   fi
@@ -923,7 +917,7 @@ run_apply_or_dry_run() {
   client_ip="$(confirm_client_ip "$(cn_detect_ssh_client_ip)")"
 
   echo
-  echo "将使用以下省份代码：${selected_codes[*]}"
+  echo "将使用以下全局白名单代码：${selected_codes[*]}"
   if [[ -n "${selected_asns_text}" ]]; then
     echo "将额外加入 ASN 白名单：${selected_asns_text}"
   fi
@@ -949,7 +943,7 @@ run_apply_or_dry_run() {
   cn_save_config "${selected_forward_mode}" "${selected_forward_ifaces_text}" "${selected_asns_text}" "${selected_port_policies}" "${selected_codes[@]}"
   cn_install_systemd_service
   echo "规则已应用。"
-  echo "已保存省份配置，重启后会由 ${CN_SERVICE_NAME} 自动恢复。"
+  echo "已保存白名单配置，重启后会由 ${CN_SERVICE_NAME} 自动恢复。"
 }
 
 restore_rules() {
@@ -969,7 +963,7 @@ restore_rules() {
   done < <(cn_load_config_codes)
 
   if [[ "${#saved_codes[@]}" -eq 0 ]]; then
-    echo "配置文件中没有省份代码。" >&2
+    echo "配置文件中没有全局白名单代码。" >&2
     exit 1
   fi
 

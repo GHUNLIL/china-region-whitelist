@@ -1,6 +1,12 @@
 {
   "source": "fixture",
   "generated_by": "test",
+  "country": {
+    "name": "中国",
+    "code": "CN",
+    "file": "country/CN.txt",
+    "url": "https://example.invalid/CN.txt"
+  },
   "provinces": [
     {
       "name": "测试省",
