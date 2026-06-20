@@ -235,6 +235,8 @@ class FirewallLibTests(unittest.TestCase):
         self.assertIn("CN_PORT_POLICIES", script)
         self.assertIn("CN_FIREWALL_BACKEND", script)
         self.assertIn("cn_render_best_effort_clear_commands", script)
+        self.assertIn("systemctl stop", script)
+        self.assertIn("^%s_port_[0-9]+$", script)
 
     def test_firewall_lib_renders_nft_rules_without_touching_flvx_table(self):
         result = run_firewall_lib(

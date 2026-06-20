@@ -115,6 +115,15 @@ bash <(curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/GHUNLIL
 bash <(curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/GHUNLIL/china-region-whitelist/main/bootstrap.sh) clear
 ```
 
+如果已经无法正常联网拉取脚本，请从云厂商控制台或仍未断开的 SSH 窗口直接执行：
+
+```bash
+systemctl disable --now china-region-whitelist.service 2>/dev/null || true
+rm -f /etc/systemd/system/china-region-whitelist.service /etc/china-region-whitelist.conf
+systemctl daemon-reload 2>/dev/null || true
+nft delete table inet china_region_whitelist 2>/dev/null || true
+```
+
 重新同步已保存的 ASN 前缀并恢复规则：
 
 ```bash

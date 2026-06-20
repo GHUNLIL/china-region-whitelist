@@ -1079,9 +1079,10 @@ status_rules() {
 
 clear_rules() {
   cn_require_root
-  cn_render_best_effort_clear_commands | cn_run_rendered_commands
   cn_disable_systemd_service
+  cn_render_best_effort_clear_commands | cn_run_rendered_commands
   echo "已清除本脚本管理的规则。"
+  echo "如仍无法访问，请在控制台执行：nft list table inet ${CN_NFT_TABLE}"
 }
 
 main() {

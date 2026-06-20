@@ -854,18 +854,16 @@ cn_render_clear_commands() {
 }
 
 cn_render_best_effort_clear_commands() {
-  if command -v nft >/dev/null 2>&1; then
-    printf 'nft delete table inet %s 2>/dev/null || true\n' "${CN_NFT_TABLE}"
-  fi
-  if command -v iptables >/dev/null 2>&1; then
-    cn_remove_jump_command INPUT
-    cn_remove_jump_command FORWARD
-    printf 'iptables -F %s 2>/dev/null || true\n' "${CN_CHAIN_NAME}"
-    printf 'iptables -X %s 2>/dev/null || true\n' "${CN_CHAIN_NAME}"
-  fi
-  if command -v ipset >/dev/null 2>&1; then
-    printf 'ipset destroy %s 2>/dev/null || true\n' "${CN_SET_NAME}"
-  fi
+  printf 'command -v nft >/dev/null 2>&1 && nft delete table inet %s 2>/dev/null || true\n' "${CN_NFT_TABLE}"
+  printf 'if command -v iptables >/dev/null 2>&1; then\n'
+  cn_remove_jump_command INPUT
+  cn_remove_jump_command FORWARD
+  printf 'iptables -F %s 2>/dev/null || true\n' "${CN_CHAIN_NAME}"
+  printf 'iptables -X %s 2>/dev/null || true\n' "${CN_CHAIN_NAME}"
+  printf 'fi\n'
+  printf 'if command -v ipset >/dev/null 2>&1; then\n'
+  printf 'ipset list -name 2>/dev/null | awk '\''$0 == "%s" || $0 ~ /^%s_port_[0-9]+$/ { print "ipset destroy " $0 " 2>/dev/null || true" }'\'' | sh\n' "${CN_SET_NAME}" "${CN_SET_NAME}"
+  printf 'fi\n'
 }
 
 cn_save_config() {
@@ -994,6 +992,7 @@ EOF
 cn_disable_systemd_service() {
   cn_require_root
   if command -v systemctl >/dev/null 2>&1; then
+    systemctl stop "${CN_SERVICE_NAME}" >/dev/null 2>&1 || true
     systemctl disable "${CN_SERVICE_NAME}" >/dev/null 2>&1 || true
     rm -f "/etc/systemd/system/${CN_SERVICE_NAME}"
     systemctl daemon-reload || true
