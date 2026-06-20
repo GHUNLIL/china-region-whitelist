@@ -77,6 +77,8 @@ sudo bash install.sh apply
 
 默认整机托管本机服务和所有 `FORWARD` 转发流量。如果你的转发都由 [Sagit-chu/flvx](https://github.com/Sagit-chu/flvx) 的 nftables 模式管理，flvx 转发端口会自动受同一白名单保护。本脚本在 nft 后端下只创建 `table inet china_region_whitelist`，不会删除或重写 flvx 使用的 `table inet flvx`。
 
+nftables 本身没有“国家等于 CN”的内置匹配，国家/省份/ASN 白名单最终都需要转换成 IPv4 CIDR set。nft 后端会用单次 `nft -f` 批量加载整张表，并在写入前去掉已被大网段覆盖的小网段，避免逐条 `nft add element` 造成的慢速导入和 interval overlap。
+
 高级用法：如果只想限制本机服务、不托管 `FORWARD`，可以设置 `CN_FORWARD_MODE_DEFAULT=none`；如果只想托管指定接口，可以设置 `CN_FORWARD_MODE_DEFAULT=selected CN_FORWARD_IFACES_DEFAULT="tun0 wg0"`。
 
 `apply` 成功后会保存选择到 `/etc/china-region-whitelist.conf`，并安装 `china-region-whitelist.service`。服务器重启后，systemd 会自动按保存的省份、ASN 和端口策略恢复规则；恢复时默认使用随包数据和本地 ASN 缓存，不依赖网络或 Python。

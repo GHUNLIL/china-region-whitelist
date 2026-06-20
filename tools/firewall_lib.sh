@@ -488,6 +488,121 @@ cn_validate_client_ip() {
   [[ "${ip}" =~ ^[0-9A-Fa-f:.]+$ ]]
 }
 
+cn_is_ipv4_covered_by_cidrs() {
+  local ip="$1"
+  local cidrs="$2"
+  awk -v target_ip="${ip}" '
+    function ip2int(value, parts) {
+      split(value, parts, ".")
+      return (((parts[1] * 256 + parts[2]) * 256 + parts[3]) * 256 + parts[4])
+    }
+    BEGIN {
+      target = ip2int(target_ip)
+      covered = 0
+    }
+    {
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "")
+      if ($0 == "" || $0 ~ /^#/) {
+        next
+      }
+      split($0, cidr, "/")
+      mask = (cidr[2] == "" ? 32 : cidr[2])
+      if (mask < 0 || mask > 32) {
+        next
+      }
+      size = 2 ^ (32 - mask)
+      start = int(ip2int(cidr[1]) / size) * size
+      end = start + size - 1
+      if (target >= start && target <= end) {
+        covered = 1
+        exit
+      }
+    }
+    END {
+      exit covered ? 0 : 1
+    }
+  ' <<<"${cidrs}"
+}
+
+cn_normalize_ipv4_cidrs_for_nft() {
+  awk '
+    function ip2int(value, parts) {
+      split(value, parts, ".")
+      return (((parts[1] * 256 + parts[2]) * 256 + parts[3]) * 256 + parts[4])
+    }
+    {
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "")
+      if ($0 == "" || $0 ~ /^#/) {
+        next
+      }
+      split($0, cidr, "/")
+      mask = (cidr[2] == "" ? 32 : cidr[2])
+      if (mask < 0 || mask > 32) {
+        next
+      }
+      size = 2 ^ (32 - mask)
+      start = int(ip2int(cidr[1]) / size) * size
+      end = start + size - 1
+      key = start "\t" end
+      if (!seen[key]++) {
+        print start "\t" end "\t" $0
+      }
+    }
+  ' | sort -n -k1,1 -k2,2r | awk -F '\t' '
+    BEGIN {
+      max_end = -1
+    }
+    $2 <= max_end {
+      next
+    }
+    {
+      print $3
+      max_end = $2
+    }
+  '
+}
+
+cn_nft_print_element_list() {
+  local values="$1"
+  local indent="${2:-      }"
+  local value first=1
+  while IFS= read -r value; do
+    value="$(cn_trim "${value}")"
+    [[ -n "${value}" ]] || continue
+    if [[ "${first}" -eq 1 ]]; then
+      printf '%s%s' "${indent}" "${value}"
+      first=0
+    else
+      printf ',\n%s%s' "${indent}" "${value}"
+    fi
+  done <<<"${values}"
+  printf '\n'
+}
+
+cn_render_nft_ip_set_definition() {
+  local set_name="$1"
+  local cidrs="$2"
+  local indent="${3:-  }"
+  printf '%sset %s {\n' "${indent}" "${set_name}"
+  printf '%s  type ipv4_addr\n' "${indent}"
+  printf '%s  flags interval\n' "${indent}"
+  printf '%s  elements = {\n' "${indent}"
+  cn_nft_print_element_list "${cidrs}" "${indent}    "
+  printf '%s  }\n' "${indent}"
+  printf '%s}\n' "${indent}"
+}
+
+cn_render_nft_port_set_definition() {
+  local set_name="$1"
+  local port_spec="$2"
+  local indent="${3:-  }"
+  printf '%sset %s {\n' "${indent}" "${set_name}"
+  printf '%s  type inet_service\n' "${indent}"
+  printf '%s  flags interval\n' "${indent}"
+  printf '%s  elements = { %s }\n' "${indent}" "${port_spec}"
+  printf '%s}\n' "${indent}"
+}
+
 cn_render_apply_commands() {
   local backend
   backend="$(cn_effective_firewall_backend)" || return 1
@@ -627,93 +742,98 @@ cn_render_apply_commands_nft() {
   cn_validate_forward_selection "${forward_mode}" "${forward_ifaces}" || return 1
   cn_validate_port_policies "${port_policies}" || return 1
 
-  local cidrs cidr iface
+  local cidrs iface
   cidrs="$(cn_collect_allowed_cidrs "${asns}" "$@")" || return 1
   if [[ -z "${cidrs}" ]]; then
     echo "所选省份/ASN 没有可用 IPv4 CIDR 段。" >&2
     return 1
   fi
 
-  printf 'nft delete table inet %s 2>/dev/null || true\n' "${CN_NFT_TABLE}"
-  printf 'nft add table inet %s\n' "${CN_NFT_TABLE}"
-  printf "nft add set inet %s %s '{ type ipv4_addr; flags interval; }'\n" "${CN_NFT_TABLE}" "${CN_NFT_SET_NAME}"
-  while IFS= read -r cidr; do
-    [[ -n "${cidr}" ]] || continue
-    printf "nft add element inet %s %s '{ %s }'\n" "${CN_NFT_TABLE}" "${CN_NFT_SET_NAME}" "${cidr}"
-  done <<<"${cidrs}"
   if [[ -n "${client_ip}" ]]; then
     if ! cn_validate_client_ip "${client_ip}"; then
       echo "非法客户端 IP：${client_ip}" >&2
       return 1
     fi
     if cn_is_ipv4_address "${client_ip}"; then
-      printf "nft add element inet %s %s '{ %s }'\n" "${CN_NFT_TABLE}" "${CN_NFT_SET_NAME}" "${client_ip}"
+      if cn_is_ipv4_covered_by_cidrs "${client_ip}" "${cidrs}"; then
+        echo "客户端 IPv4 已被现有 nft 白名单覆盖，跳过重复加入：${client_ip}" >&2
+      else
+        cidrs="${cidrs}"$'\n'"${client_ip}"
+      fi
     else
       echo "nft 后端当前只托管 IPv4 白名单，已跳过 IPv6 客户端临时白名单：${client_ip}" >&2
     fi
   fi
+  cidrs="$(cn_normalize_ipv4_cidrs_for_nft <<<"${cidrs}")"
+
+  printf 'nft delete table inet %s 2>/dev/null || true\n' "${CN_NFT_TABLE}"
+  printf "nft -f - <<'NFT'\n"
+  printf 'table inet %s {\n' "${CN_NFT_TABLE}"
+  cn_render_nft_ip_set_definition "${CN_NFT_SET_NAME}" "${cidrs}" "  "
   cn_for_each_port_policy "${port_policies}" cn_render_nft_port_policy_sets
 
-  printf "nft add chain inet %s input '{ type filter hook input priority %s; policy accept; }'\n" "${CN_NFT_TABLE}" "${CN_NFT_HOOK_PRIORITY}"
-  printf 'nft add rule inet %s input iifname "lo" accept\n' "${CN_NFT_TABLE}"
-  printf 'nft add rule inet %s input ct state established,related accept\n' "${CN_NFT_TABLE}"
+  printf '  chain input {\n'
+  printf '    type filter hook input priority %s; policy accept;\n' "${CN_NFT_HOOK_PRIORITY}"
+  printf '    iifname "lo" accept\n'
+  printf '    ct state established,related accept\n'
   cn_for_each_port_policy "${port_policies}" cn_render_nft_port_policy_input_rules
-  printf 'nft add rule inet %s input ip saddr @%s accept\n' "${CN_NFT_TABLE}" "${CN_NFT_SET_NAME}"
-  printf 'nft add rule inet %s input meta nfproto ipv4 reject\n' "${CN_NFT_TABLE}"
+  printf '    ip saddr @%s accept\n' "${CN_NFT_SET_NAME}"
+  printf '    meta nfproto ipv4 reject\n'
+  printf '  }\n'
 
   if [[ "${forward_mode}" != "none" ]]; then
-    printf "nft add chain inet %s forward '{ type filter hook forward priority %s; policy accept; }'\n" "${CN_NFT_TABLE}" "${CN_NFT_HOOK_PRIORITY}"
-    printf 'nft add rule inet %s forward ct state established,related accept\n' "${CN_NFT_TABLE}"
+    printf '  chain forward {\n'
+    printf '    type filter hook forward priority %s; policy accept;\n' "${CN_NFT_HOOK_PRIORITY}"
+    printf '    ct state established,related accept\n'
     cn_for_each_port_policy "${port_policies}" cn_render_nft_port_policy_forward_rules
     if [[ "${forward_mode}" == "selected" ]]; then
       for iface in ${forward_ifaces}; do
-        printf 'nft add rule inet %s forward iifname "%s" ip saddr @%s accept\n' "${CN_NFT_TABLE}" "${iface}" "${CN_NFT_SET_NAME}"
-        printf 'nft add rule inet %s forward iifname "%s" meta nfproto ipv4 reject\n' "${CN_NFT_TABLE}" "${iface}"
-        printf 'nft add rule inet %s forward oifname "%s" ip saddr @%s accept\n' "${CN_NFT_TABLE}" "${iface}" "${CN_NFT_SET_NAME}"
-        printf 'nft add rule inet %s forward oifname "%s" meta nfproto ipv4 reject\n' "${CN_NFT_TABLE}" "${iface}"
+        printf '    iifname "%s" ip saddr @%s accept\n' "${iface}" "${CN_NFT_SET_NAME}"
+        printf '    iifname "%s" meta nfproto ipv4 reject\n' "${iface}"
+        printf '    oifname "%s" ip saddr @%s accept\n' "${iface}" "${CN_NFT_SET_NAME}"
+        printf '    oifname "%s" meta nfproto ipv4 reject\n' "${iface}"
       done
     else
-      printf 'nft add rule inet %s forward ip saddr @%s accept\n' "${CN_NFT_TABLE}" "${CN_NFT_SET_NAME}"
-      printf 'nft add rule inet %s forward meta nfproto ipv4 reject\n' "${CN_NFT_TABLE}"
+      printf '    ip saddr @%s accept\n' "${CN_NFT_SET_NAME}"
+      printf '    meta nfproto ipv4 reject\n'
     fi
+    printf '  }\n'
   fi
+  printf '}\n'
+  printf 'NFT\n'
 }
 
 cn_render_nft_port_policy_sets() {
   local index="$1"
   local port_spec="$2"
   local selectors="$3"
-  local cidrs cidr
+  local cidrs
   cidrs="$(cn_collect_selector_cidrs "${selectors}")" || return 1
   if [[ -z "${cidrs}" ]]; then
     echo "端口策略 ${index} 没有可用 IPv4 CIDR 段。" >&2
     return 1
   fi
-  printf "nft add set inet %s port_policy_%s_ports '{ type inet_service; flags interval; }'\n" "${CN_NFT_TABLE}" "${index}"
-  printf "nft add element inet %s port_policy_%s_ports '{ %s }'\n" "${CN_NFT_TABLE}" "${index}" "${port_spec}"
-  printf "nft add set inet %s port_policy_%s_v4 '{ type ipv4_addr; flags interval; }'\n" "${CN_NFT_TABLE}" "${index}"
-  while IFS= read -r cidr; do
-    [[ -n "${cidr}" ]] || continue
-    printf "nft add element inet %s port_policy_%s_v4 '{ %s }'\n" "${CN_NFT_TABLE}" "${index}" "${cidr}"
-  done <<<"${cidrs}"
+  cidrs="$(cn_normalize_ipv4_cidrs_for_nft <<<"${cidrs}")"
+  cn_render_nft_port_set_definition "port_policy_${index}_ports" "${port_spec}" "  "
+  cn_render_nft_ip_set_definition "port_policy_${index}_v4" "${cidrs}" "  "
 }
 
 cn_render_nft_port_policy_input_rules() {
   local index="$1"
   local _port_spec="$2"
   local _selectors="$3"
-  printf 'nft add rule inet %s input tcp dport @port_policy_%s_ports ip saddr @port_policy_%s_v4 accept\n' "${CN_NFT_TABLE}" "${index}" "${index}"
-  printf 'nft add rule inet %s input udp dport @port_policy_%s_ports ip saddr @port_policy_%s_v4 accept\n' "${CN_NFT_TABLE}" "${index}" "${index}"
-  printf 'nft add rule inet %s input tcp dport @port_policy_%s_ports meta nfproto ipv4 reject\n' "${CN_NFT_TABLE}" "${index}"
-  printf 'nft add rule inet %s input udp dport @port_policy_%s_ports meta nfproto ipv4 reject\n' "${CN_NFT_TABLE}" "${index}"
+  printf '    tcp dport @port_policy_%s_ports ip saddr @port_policy_%s_v4 accept\n' "${index}" "${index}"
+  printf '    udp dport @port_policy_%s_ports ip saddr @port_policy_%s_v4 accept\n' "${index}" "${index}"
+  printf '    tcp dport @port_policy_%s_ports meta nfproto ipv4 reject\n' "${index}"
+  printf '    udp dport @port_policy_%s_ports meta nfproto ipv4 reject\n' "${index}"
 }
 
 cn_render_nft_port_policy_forward_rules() {
   local index="$1"
   local _port_spec="$2"
   local _selectors="$3"
-  printf 'nft add rule inet %s forward ct original proto-dst @port_policy_%s_ports ip saddr @port_policy_%s_v4 accept\n' "${CN_NFT_TABLE}" "${index}" "${index}"
-  printf 'nft add rule inet %s forward ct original proto-dst @port_policy_%s_ports meta nfproto ipv4 reject\n' "${CN_NFT_TABLE}" "${index}"
+  printf '    ct original proto-dst @port_policy_%s_ports ip saddr @port_policy_%s_v4 accept\n' "${index}" "${index}"
+  printf '    ct original proto-dst @port_policy_%s_ports meta nfproto ipv4 reject\n' "${index}"
 }
 
 cn_render_clear_commands() {
@@ -1021,10 +1141,31 @@ cn_list_tunnel_interfaces() {
 }
 
 cn_run_rendered_commands() {
-  local command_line
+  local script_file command_line in_nft_batch=0 status
+  script_file="$(mktemp)"
+  {
+    echo "set -euo pipefail"
+    cat
+  } > "${script_file}"
   while IFS= read -r command_line; do
     [[ -z "${command_line}" ]] && continue
+    if [[ "${in_nft_batch}" -eq 1 ]]; then
+      if [[ "${command_line}" == "NFT" ]]; then
+        in_nft_batch=0
+      fi
+      continue
+    fi
     echo "+ ${command_line}"
-    eval "${command_line}"
-  done
+    if [[ "${command_line}" == "nft -f - <<'NFT'" ]]; then
+      echo "+ [nft 批量规则内容已省略]"
+      in_nft_batch=1
+    fi
+  done < "${script_file}"
+  if bash "${script_file}"; then
+    status=0
+  else
+    status=$?
+  fi
+  rm -f "${script_file}"
+  return "${status}"
 }

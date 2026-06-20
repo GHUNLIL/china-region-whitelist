@@ -240,12 +240,16 @@ class FirewallLibTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("nft delete table inet china_region_whitelist", result.stdout)
-        self.assertIn("nft add table inet china_region_whitelist", result.stdout)
-        self.assertIn("nft add element inet china_region_whitelist allowed_v4 '{ 10.0.0.0/8 }'", result.stdout)
-        self.assertIn("nft add element inet china_region_whitelist allowed_v4 '{ 203.0.113.0/24 }'", result.stdout)
-        self.assertIn("nft add element inet china_region_whitelist allowed_v4 '{ 198.51.100.88 }'", result.stdout)
-        self.assertIn("nft add rule inet china_region_whitelist forward ip saddr @allowed_v4 accept", result.stdout)
-        self.assertIn("nft add rule inet china_region_whitelist forward meta nfproto ipv4 reject", result.stdout)
+        self.assertIn("nft -f - <<'NFT'", result.stdout)
+        self.assertIn("table inet china_region_whitelist {", result.stdout)
+        self.assertIn("set allowed_v4 {", result.stdout)
+        self.assertIn("10.0.0.0/8", result.stdout)
+        self.assertIn("203.0.113.0/24", result.stdout)
+        self.assertIn("198.51.100.88", result.stdout)
+        self.assertIn("chain forward {", result.stdout)
+        self.assertIn("ip saddr @allowed_v4 accept", result.stdout)
+        self.assertIn("meta nfproto ipv4 reject", result.stdout)
+        self.assertNotIn("nft add element inet china_region_whitelist allowed_v4", result.stdout)
         self.assertNotIn("table inet flvx", result.stdout)
 
     def test_firewall_lib_renders_nft_input_only_mode(self):
@@ -254,8 +258,8 @@ class FirewallLibTests(unittest.TestCase):
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("nft add chain inet china_region_whitelist input", result.stdout)
-        self.assertNotIn("nft add chain inet china_region_whitelist forward", result.stdout)
+        self.assertIn("chain input {", result.stdout)
+        self.assertNotIn("chain forward {", result.stdout)
 
     def test_firewall_lib_uses_country_cn_for_global_china(self):
         result = run_firewall_lib(
@@ -263,9 +267,9 @@ class FirewallLibTests(unittest.TestCase):
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("nft add element inet china_region_whitelist allowed_v4 '{ 198.18.0.0/15 }'", result.stdout)
-        self.assertNotIn("nft add element inet china_region_whitelist allowed_v4 '{ 10.0.0.0/8 }'", result.stdout)
-        self.assertNotIn("nft add element inet china_region_whitelist allowed_v4 '{ 172.16.0.0/12 }'", result.stdout)
+        self.assertIn("198.18.0.0/15", result.stdout)
+        self.assertNotIn("10.0.0.0/8", result.stdout)
+        self.assertNotIn("172.16.0.0/12", result.stdout)
 
     def test_firewall_lib_uses_country_cn_for_port_policy_china(self):
         result = run_firewall_lib(
@@ -273,9 +277,10 @@ class FirewallLibTests(unittest.TestCase):
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("nft add element inet china_region_whitelist allowed_v4 '{ 10.0.0.0/8 }'", result.stdout)
-        self.assertIn("nft add element inet china_region_whitelist port_policy_1_v4 '{ 198.18.0.0/15 }'", result.stdout)
-        self.assertNotIn("nft add element inet china_region_whitelist port_policy_1_v4 '{ 10.0.0.0/8 }'", result.stdout)
+        self.assertIn("set allowed_v4 {", result.stdout)
+        self.assertIn("10.0.0.0/8", result.stdout)
+        self.assertIn("set port_policy_1_v4 {", result.stdout)
+        self.assertIn("198.18.0.0/15", result.stdout)
 
     def test_firewall_lib_renders_nft_port_policy_before_global_rules(self):
         result = run_firewall_lib(
@@ -283,17 +288,40 @@ class FirewallLibTests(unittest.TestCase):
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("nft add element inet china_region_whitelist port_policy_1_ports '{ 22 }'", result.stdout)
-        self.assertIn("nft add element inet china_region_whitelist port_policy_1_v4 '{ 10.0.0.0/8 }'", result.stdout)
-        self.assertIn("nft add element inet china_region_whitelist port_policy_2_ports '{ 10000-20000 }'", result.stdout)
-        self.assertIn("nft add element inet china_region_whitelist port_policy_2_v4 '{ 203.0.113.0/24 }'", result.stdout)
-        self.assertIn("nft add element inet china_region_whitelist port_policy_2_v4 '{ 198.51.100.7/32 }'", result.stdout)
-        self.assertIn("nft add rule inet china_region_whitelist input tcp dport @port_policy_1_ports ip saddr @port_policy_1_v4 accept", result.stdout)
-        self.assertIn("nft add rule inet china_region_whitelist input tcp dport @port_policy_1_ports meta nfproto ipv4 reject", result.stdout)
-        self.assertIn("nft add rule inet china_region_whitelist forward ct original proto-dst @port_policy_2_ports ip saddr @port_policy_2_v4 accept", result.stdout)
-        policy_reject = result.stdout.index("input tcp dport @port_policy_1_ports meta nfproto ipv4 reject")
-        global_accept = result.stdout.index("input ip saddr @allowed_v4 accept")
+        self.assertIn("set port_policy_1_ports {", result.stdout)
+        self.assertIn("elements = { 22 }", result.stdout)
+        self.assertIn("set port_policy_1_v4 {", result.stdout)
+        self.assertIn("10.0.0.0/8", result.stdout)
+        self.assertIn("set port_policy_2_ports {", result.stdout)
+        self.assertIn("elements = { 10000-20000 }", result.stdout)
+        self.assertIn("set port_policy_2_v4 {", result.stdout)
+        self.assertIn("203.0.113.0/24", result.stdout)
+        self.assertIn("198.51.100.7/32", result.stdout)
+        self.assertIn("tcp dport @port_policy_1_ports ip saddr @port_policy_1_v4 accept", result.stdout)
+        self.assertIn("tcp dport @port_policy_1_ports meta nfproto ipv4 reject", result.stdout)
+        self.assertIn("ct original proto-dst @port_policy_2_ports ip saddr @port_policy_2_v4 accept", result.stdout)
+        policy_reject = result.stdout.index("tcp dport @port_policy_1_ports meta nfproto ipv4 reject")
+        global_accept = result.stdout.index("ip saddr @allowed_v4 accept")
         self.assertLess(policy_reject, global_accept)
+
+    def test_firewall_lib_skips_client_ip_when_nft_set_already_covers_it(self):
+        result = run_firewall_lib(
+            "CN_FIREWALL_BACKEND=nft cn_render_apply_commands 203.0.113.7 all '' AS64500 '' 990000"
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("客户端 IPv4 已被现有 nft 白名单覆盖，跳过重复加入：203.0.113.7", result.stderr)
+        self.assertEqual(result.stdout.count("203.0.113.7"), 0)
+
+    def test_firewall_lib_removes_overlapping_nft_port_policy_cidrs(self):
+        result = run_firewall_lib(
+            "CN_FIREWALL_BACKEND=nft cn_render_apply_commands '' all '' '' '22=AS64500,203.0.113.7/32' 990000"
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("set port_policy_1_v4 {", result.stdout)
+        self.assertIn("203.0.113.0/24", result.stdout)
+        self.assertNotIn("203.0.113.7/32", result.stdout)
 
     def test_default_downloads_use_github_proxy(self):
         firewall_lib = FIREWALL_LIB.read_text(encoding="utf-8")
