@@ -853,6 +853,21 @@ cn_render_clear_commands() {
   esac
 }
 
+cn_render_best_effort_clear_commands() {
+  if command -v nft >/dev/null 2>&1; then
+    printf 'nft delete table inet %s 2>/dev/null || true\n' "${CN_NFT_TABLE}"
+  fi
+  if command -v iptables >/dev/null 2>&1; then
+    cn_remove_jump_command INPUT
+    cn_remove_jump_command FORWARD
+    printf 'iptables -F %s 2>/dev/null || true\n' "${CN_CHAIN_NAME}"
+    printf 'iptables -X %s 2>/dev/null || true\n' "${CN_CHAIN_NAME}"
+  fi
+  if command -v ipset >/dev/null 2>&1; then
+    printf 'ipset destroy %s 2>/dev/null || true\n' "${CN_SET_NAME}"
+  fi
+}
+
 cn_save_config() {
   cn_require_root
   local forward_mode="$1"

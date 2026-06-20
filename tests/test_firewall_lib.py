@@ -214,6 +214,8 @@ class FirewallLibTests(unittest.TestCase):
         self.assertIn("删除端口白名单", script)
         self.assertIn("端口白名单优先于全局白名单生效", script)
         self.assertIn("上/下键移动，空格勾选，回车确认", script)
+        self.assertIn("清理已应用规则和开机配置", script)
+        self.assertIn("confirm_clear_rules_visual", script)
         self.assertIn("update-asn", script)
         self.assertNotIn("请选择 TUN/转发接口托管方式", script)
         self.assertNotIn("cn_resolve_city", script)
@@ -232,6 +234,7 @@ class FirewallLibTests(unittest.TestCase):
         self.assertIn("CN_ASNS", script)
         self.assertIn("CN_PORT_POLICIES", script)
         self.assertIn("CN_FIREWALL_BACKEND", script)
+        self.assertIn("cn_render_best_effort_clear_commands", script)
 
     def test_firewall_lib_renders_nft_rules_without_touching_flvx_table(self):
         result = run_firewall_lib(

@@ -666,7 +666,16 @@ show_config_visual() {
   pause_visual
 }
 
+confirm_clear_rules_visual() {
+  visual_single_select \
+    "确认清理本脚本已应用的规则和开机配置" \
+    "取消，返回主界面" "no" \
+    "清理规则、保存配置和 systemd 服务" "yes"
+  [[ "${VISUAL_SELECTED_VALUE}" == "yes" ]]
+}
+
 interactive_config_editor() {
+  local dry_run="${1:-0}"
   CONFIG_CODES=()
   CONFIG_ASNS=()
   CONFIG_PORT_POLICIES=()
@@ -674,16 +683,30 @@ interactive_config_editor() {
   local title
   while true; do
     title="$(config_editor_title)"
-    visual_single_select \
-      "${title}" \
-      "编辑全局白名单（省份/全国）" "edit_global" \
-      "编辑全局 ASN 白名单" "edit_asn" \
-      "新增端口白名单" "add_port" \
-      "修改端口白名单" "edit_port" \
-      "删除端口白名单" "delete_port" \
-      "手动编辑全部端口白名单" "manual_ports" \
-      "查看当前配置" "view" \
-      "完成并继续" "done"
+    if [[ "${dry_run}" == "1" ]]; then
+      visual_single_select \
+        "${title}" \
+        "编辑全局白名单（省份/全国）" "edit_global" \
+        "编辑全局 ASN 白名单" "edit_asn" \
+        "新增端口白名单" "add_port" \
+        "修改端口白名单" "edit_port" \
+        "删除端口白名单" "delete_port" \
+        "手动编辑全部端口白名单" "manual_ports" \
+        "查看当前配置" "view" \
+        "完成并继续" "done"
+    else
+      visual_single_select \
+        "${title}" \
+        "编辑全局白名单（省份/全国）" "edit_global" \
+        "编辑全局 ASN 白名单" "edit_asn" \
+        "新增端口白名单" "add_port" \
+        "修改端口白名单" "edit_port" \
+        "删除端口白名单" "delete_port" \
+        "手动编辑全部端口白名单" "manual_ports" \
+        "查看当前配置" "view" \
+        "清理已应用规则和开机配置" "clear_applied" \
+        "完成并继续" "done"
+    fi
     case "${VISUAL_SELECTED_VALUE}" in
       edit_global)
         edit_global_codes_visual
@@ -705,6 +728,12 @@ interactive_config_editor() {
         ;;
       view)
         show_config_visual
+        ;;
+      clear_applied)
+        if confirm_clear_rules_visual; then
+          clear_rules
+          exit 0
+        fi
         ;;
       done)
         if [[ "${#CONFIG_CODES[@]}" -eq 0 ]]; then
@@ -881,7 +910,7 @@ run_apply_or_dry_run() {
   SELECTED_ASNS=()
   SELECTED_PORT_POLICIES=""
   if visual_menu_available; then
-    interactive_config_editor
+    interactive_config_editor "${dry_run}"
   else
     interactive_select_codes
     interactive_select_asns
@@ -1050,8 +1079,7 @@ status_rules() {
 
 clear_rules() {
   cn_require_root
-  cn_require_commands
-  cn_render_clear_commands | cn_run_rendered_commands
+  cn_render_best_effort_clear_commands | cn_run_rendered_commands
   cn_disable_systemd_service
   echo "已清除本脚本管理的规则。"
 }
