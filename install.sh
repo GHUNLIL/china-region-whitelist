@@ -859,6 +859,19 @@ confirm_apply_rules() {
   [[ "${confirm}" == "YES" ]]
 }
 
+confirm_post_apply_rules() {
+  [[ "${CN_POST_APPLY_CONFIRM:-1}" != "0" ]] || return 0
+  [[ -r /dev/tty && ( -t 0 || -t 2 ) ]] || return 0
+
+  local timeout="${CN_POST_APPLY_TIMEOUT:-60}"
+  local confirm=""
+  echo
+  echo "规则已临时应用。请立刻用新窗口测试 SSH/业务端口。"
+  echo "如果 ${timeout} 秒内没有输入 YES，脚本会自动清理本次规则，避免锁死。"
+  read -r -t "${timeout}" -p "确认新连接可访问并保存开机恢复？输入 YES: " confirm < /dev/tty || confirm=""
+  [[ "${confirm}" == "YES" ]]
+}
+
 parse_update_mode() {
   UPDATE_MODE="$1"
   shift || true
@@ -969,6 +982,12 @@ run_apply_or_dry_run() {
     exit 0
   fi
   cn_render_apply_commands "${client_ip}" "${selected_forward_mode}" "${selected_forward_ifaces_text}" "${selected_asns_text}" "${selected_port_policies}" "${selected_codes[@]}" | cn_run_rendered_commands
+  if ! confirm_post_apply_rules; then
+    echo "未确认新连接可访问，正在自动清理本次规则。"
+    cn_disable_systemd_service
+    cn_render_best_effort_clear_commands | cn_run_rendered_commands
+    exit 1
+  fi
   cn_save_config "${selected_forward_mode}" "${selected_forward_ifaces_text}" "${selected_asns_text}" "${selected_port_policies}" "${selected_codes[@]}"
   cn_install_systemd_service
   echo "规则已应用。"

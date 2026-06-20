@@ -39,6 +39,8 @@ bash <(curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/GHUNLIL
 bash <(curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/GHUNLIL/china-region-whitelist/main/bootstrap.sh) apply
 ```
 
+正式应用后，脚本会先临时加载规则并等待 60 秒确认。请用新窗口测试 SSH/业务端口，确认可访问后输入 `YES`，脚本才会保存配置并启用开机恢复；如果超时或未确认，会自动清理本次规则。可用 `CN_POST_APPLY_TIMEOUT=120` 调整等待时间，或用 `CN_POST_APPLY_CONFIRM=0` 关闭这个保护。
+
 `bootstrap.sh` 会把项目安装或更新到 `/opt/china-region-whitelist`，然后用 root 权限执行真正的 `install.sh`。如果当前不是 root，会自动调用 `sudo`。
 
 如需手动方式，也可以克隆仓库后运行：
