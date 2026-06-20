@@ -674,11 +674,35 @@ confirm_clear_rules_visual() {
   [[ "${VISUAL_SELECTED_VALUE}" == "yes" ]]
 }
 
+load_saved_config_into_editor() {
+  [[ -r "${CN_CONFIG_FILE}" ]] || return 0
+
+  local item saved_ports
+  CONFIG_CODES=()
+  while IFS= read -r item; do
+    [[ -n "${item}" ]] && CONFIG_CODES+=("${item}")
+  done < <(cn_load_config_codes 2>/dev/null || true)
+
+  CONFIG_ASNS=()
+  while IFS= read -r item; do
+    [[ -n "${item}" ]] && CONFIG_ASNS+=("${item}")
+  done < <(cn_load_config_asns 2>/dev/null || true)
+
+  CONFIG_PORT_POLICIES=()
+  saved_ports="$(cn_load_config_port_policies 2>/dev/null || true)"
+  if [[ -n "$(cn_trim "${saved_ports}")" ]]; then
+    if ! set_config_port_policies_from_text "${saved_ports}" 2>/dev/null; then
+      CONFIG_PORT_POLICIES=()
+    fi
+  fi
+}
+
 interactive_config_editor() {
   local dry_run="${1:-0}"
   CONFIG_CODES=()
   CONFIG_ASNS=()
   CONFIG_PORT_POLICIES=()
+  load_saved_config_into_editor
 
   local title
   while true; do
