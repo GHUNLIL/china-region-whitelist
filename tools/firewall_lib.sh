@@ -20,6 +20,7 @@ CN_PORT_POLICIES="${CN_PORT_POLICIES:-}"
 CN_GITHUB_PROXY="${CN_GITHUB_PROXY:-https://gh-proxy.com/}"
 CN_UPSTREAM_INDEX_URL="https://raw.githubusercontent.com/metowolf/iplist/master/docs/cncity.md"
 CN_UPSTREAM_DATA_BASE_URL="https://raw.githubusercontent.com/metowolf/iplist/master/data/cncity"
+CN_COUNTRY_URL="${CN_COUNTRY_URL:-https://ftp.apnic.net/stats/apnic/delegated-apnic-latest}"
 CN_ASN_BASE_URL="${CN_ASN_BASE_URL:-https://raw.githubusercontent.com/ipverse/as-ip-blocks/master/as}"
 CN_ASN_CACHE_DIR="${CN_ASN_CACHE_DIR:-${CN_RUNTIME_DIR}/asn}"
 
@@ -111,6 +112,7 @@ cn_update_runtime_data() {
   else
     args+=(--data-base-url "$(cn_github_proxy_url "${CN_UPSTREAM_DATA_BASE_URL}")")
   fi
+  args+=(--country-url "${CN_COUNTRY_URL}")
 
   echo "正在同步最新省级 CIDR 数据（需要 python3；默认安装流程不需要同步）..." >&2
   cn_python_for_update "${CN_PREPARE_DATA}" "${args[@]}"

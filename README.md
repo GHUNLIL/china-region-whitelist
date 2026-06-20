@@ -2,7 +2,7 @@
 
 这个项目用于在普通中国大陆服务器上按国家/省级 IP 段限制入站访问：只有交互选择的中国大陆 `CN`、省/自治区/直辖市、当前 SSH 客户端 IP、以及可选的 ASN 白名单可以访问服务器，其他来源访问入站端口会被拒绝。脚本不管理 `OUTPUT` 出站流量，服务器向外连接不受限制；默认只托管本机 `INPUT` 和 DNAT/端口转发类入站 `FORWARD` 流量，因此本机服务和 flvx 这类 nftables 端口转发会走同一套整机白名单。
 
-仓库会通过 GitHub Actions 每小时同步一次上游 CIDR 数据，并把国家级 `CN` CIDR、省份索引和省级 CIDR 文件一起打进仓库。服务器运行 `apply` 或 `dry-run` 时默认直接使用随包数据，不需要安装 Python。
+仓库会通过 GitHub Actions 每小时同步一次上游 CIDR 数据，并把 APNIC 国家级 `CN` IPv4、省份索引和省级 CIDR 文件一起打进仓库。服务器运行 `apply` 或 `dry-run` 时默认直接使用随包数据，不需要安装 Python。
 
 默认入口面向中国大陆服务器：一行 `bash <(curl ...)` 通过 GitHub 代理下载完整项目，拿到的就是仓库最近一次同步好的 IP 数据。
 
@@ -12,7 +12,7 @@
 - `install.sh`：服务器上运行的一键脚本
 - `data/regions.json`：省份索引
 - `data/regions.tsv`：服务器 Bash 运行时读取的省份索引
-- `data/country/CN.txt`：国家级中国大陆 CIDR 段，用于“全国/CN”
+- `data/country/CN.txt`：APNIC 国家级中国大陆 IPv4 段，用于“全国/CN”
 - `data/regions/*.txt`：本地省级 CIDR 段
 - `tools/region_tool.py`：开发/测试用的本地数据解析工具
 - `tools/firewall_lib.sh`：防火墙辅助函数
@@ -143,7 +143,7 @@ bash -n install.sh tools/firewall_lib.sh
 
 `apply` 会拒绝所有未命中白名单的入站流量，包括 SSH。脚本会检测当前 SSH 客户端 IP，并询问是否加入本次白名单，建议保留默认 `Y`。
 
-省级 CIDR 数据来自 `metowolf/iplist`。默认模式不会在服务器上访问上游数据源；如果需要最新数据，重新运行 `bootstrap.sh` 拉取仓库最新包即可。ASN 前缀来自 `ipverse/as-ip-blocks` 的每日聚合 IPv4 数据，首次添加 ASN 或运行 `update-asn` 时需要访问 GitHub raw；默认同样会走 `https://gh-proxy.com/`。若服务器缺少 `nftables`、`iptables` 或 `ipset`，脚本会尝试使用系统默认软件源安装依赖；这一步可能访问发行版软件源。
+国家级 `CN` IPv4 数据来自 APNIC delegated stats，省级 CIDR 数据来自 `metowolf/iplist`。默认模式不会在服务器上访问上游数据源；如果需要最新数据，重新运行 `bootstrap.sh` 拉取仓库最新包即可。ASN 前缀来自 `ipverse/as-ip-blocks` 的每日聚合 IPv4 数据，首次添加 ASN 或运行 `update-asn` 时需要访问 GitHub raw；默认同样会走 `https://gh-proxy.com/`。若服务器缺少 `nftables`、`iptables` 或 `ipset`，脚本会尝试使用系统默认软件源安装依赖；这一步可能访问发行版软件源。
 
 默认 GitHub 访问会经过 `https://gh-proxy.com/`。如果需要换代理或直连：
 

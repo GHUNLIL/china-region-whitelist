@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import re
 import shutil
@@ -16,9 +17,8 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_INDEX = ROOT / "data" / "cncity.md"
 DEFAULT_INDEX_URL = "https://raw.githubusercontent.com/metowolf/iplist/master/docs/cncity.md"
 DEFAULT_DATA_BASE_URL = "https://raw.githubusercontent.com/metowolf/iplist/master/data/cncity"
-COUNTRY_CODE = "100000"
+DEFAULT_COUNTRY_URL = "https://ftp.apnic.net/stats/apnic/delegated-apnic-latest"
 COUNTRY_FILE = "country/CN.txt"
-COUNTRY_ORIGINAL_URL = "https://metowolf.github.io/iplist/data/cncity/100000.txt"
 
 ROW_RE = re.compile(r"^\|([^|]+)\|([^|]+)\|$")
 CODE_RE = re.compile(r"/(\d{6})\.txt$")
@@ -73,6 +73,25 @@ def normalize_region_text(text: str) -> str:
     return "\n".join(lines) + "\n"
 
 
+def parse_apnic_country_ipv4(text: str, country_code: str = "CN") -> list[str]:
+    networks: list[ipaddress.IPv4Network] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split("|")
+        if len(parts) < 7:
+            continue
+        _registry, cc, resource_type, start, value, _date, status = parts[:7]
+        if cc != country_code or resource_type != "ipv4" or status not in {"allocated", "assigned"}:
+            continue
+        start_ip = ipaddress.IPv4Address(start)
+        count = int(value)
+        end_ip = ipaddress.IPv4Address(int(start_ip) + count - 1)
+        networks.extend(ipaddress.summarize_address_range(start_ip, end_ip))
+    return [str(network) for network in ipaddress.collapse_addresses(networks)]
+
+
 def region_url(code: str, original_url: str, data_base_url: str) -> str:
     if data_base_url:
         return f"{data_base_url.rstrip('/')}/{code}.txt"
@@ -88,13 +107,15 @@ def write_region_file(code: str, url: str, regions_dir: Path, force: bool, data_
     target.write_text(normalize_region_text(text), encoding="utf-8")
 
 
-def write_country_file(data_dir: Path, force: bool, data_base_url: str) -> None:
+def write_country_file(data_dir: Path, force: bool, country_url: str) -> None:
     target = data_dir / COUNTRY_FILE
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists() and target.stat().st_size > 0 and not force:
         return
-    text = download_text(region_url(COUNTRY_CODE, COUNTRY_ORIGINAL_URL, data_base_url))
-    target.write_text(normalize_region_text(text), encoding="utf-8")
+    country_cidrs = parse_apnic_country_ipv4(download_text(country_url))
+    if not country_cidrs:
+        raise RuntimeError(f"no CN IPv4 CIDRs parsed from {country_url}")
+    target.write_text("\n".join(country_cidrs) + "\n", encoding="utf-8")
 
 
 def iter_entries(provinces: list[dict[str, object]]):
@@ -133,6 +154,11 @@ def main() -> int:
         default=DEFAULT_DATA_BASE_URL,
         help="Base URL for cncity CIDR files; use an empty value to keep URLs from the index",
     )
+    parser.add_argument(
+        "--country-url",
+        default=DEFAULT_COUNTRY_URL,
+        help="APNIC delegated stats URL used to generate data/country/CN.txt",
+    )
     parser.add_argument("--output-dir", type=Path, default=ROOT, help="Project-style output directory")
     parser.add_argument("--refresh-index", action="store_true", help="Download the latest cncity index first")
     parser.add_argument("--force", action="store_true", help="Overwrite existing region files")
@@ -159,8 +185,8 @@ def main() -> int:
         raise SystemExit("No provinces parsed from cncity index")
 
     if not args.skip_download:
-        print(f"[country] {COUNTRY_CODE} 中国")
-        write_country_file(data_dir, args.force, args.data_base_url)
+        print("[country] CN 中国")
+        write_country_file(data_dir, args.force, args.country_url)
         entries = list(iter_entries(provinces))
         for index, entry in enumerate(entries, 1):
             print(f"[{index}/{len(entries)}] {entry['code']} {entry['name']}")
@@ -176,12 +202,13 @@ def main() -> int:
         "source": "https://github.com/metowolf/iplist/blob/master/docs/cncity.md",
         "index_url": args.index_url,
         "data_base_url": args.data_base_url,
+        "country_url": args.country_url,
         "generated_by": "tools/prepare_data.py",
         "country": {
             "name": "中国",
             "code": "CN",
             "file": COUNTRY_FILE,
-            "url": region_url(COUNTRY_CODE, COUNTRY_ORIGINAL_URL, args.data_base_url),
+            "url": args.country_url,
         },
         "provinces": provinces,
     }

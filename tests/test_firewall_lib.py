@@ -1,6 +1,7 @@
 import subprocess
 import sys
 import unittest
+import importlib.util
 from pathlib import Path
 
 
@@ -10,6 +11,14 @@ TOOL = ROOT / "tools" / "region_tool.py"
 INSTALL_SH = ROOT / "install.sh"
 FIREWALL_LIB = ROOT / "tools" / "firewall_lib.sh"
 BOOTSTRAP_SH = ROOT / "bootstrap.sh"
+
+
+def load_prepare_data_module():
+    spec = importlib.util.spec_from_file_location("prepare_data", ROOT / "tools" / "prepare_data.py")
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
 
 
 def run_tool(*args: str) -> subprocess.CompletedProcess[str]:
@@ -367,9 +376,25 @@ class FirewallLibTests(unittest.TestCase):
         self.assertIn("--force", script)
         self.assertIn("DEFAULT_INDEX_URL", script)
         self.assertIn("DEFAULT_DATA_BASE_URL", script)
+        self.assertIn("DEFAULT_COUNTRY_URL", script)
+        self.assertIn("parse_apnic_country_ipv4", script)
         self.assertIn("write_regions_tsv", script)
         self.assertIn("COUNTRY_FILE", script)
         self.assertIn("write_country_file", script)
+
+    def test_prepare_data_parses_apnic_country_ipv4(self):
+        prepare_data = load_prepare_data_module()
+        cidrs = prepare_data.parse_apnic_country_ipv4(
+            "\n".join(
+                [
+                    "apnic|CN|ipv4|123.184.0.0|524288|20200101|allocated",
+                    "apnic|HK|ipv4|123.192.0.0|65536|20200101|allocated",
+                    "apnic|CN|ipv6|2408:4000::|22|20200101|allocated",
+                ]
+            )
+        )
+
+        self.assertEqual(cidrs, ["123.184.0.0/13"])
 
 
 if __name__ == "__main__":
