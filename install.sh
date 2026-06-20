@@ -855,8 +855,15 @@ confirm_apply_rules() {
   fi
 
   local confirm
-  read -r -p "确认继续？输入 YES: " confirm
-  [[ "${confirm}" == "YES" ]]
+  read -r -p "确认继续？输入 YES/yes/y: " confirm
+  is_yes_confirmation "${confirm}"
+}
+
+is_yes_confirmation() {
+  case "$(cn_trim "${1:-}")" in
+    YES|yes|Y|y) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 confirm_post_apply_rules() {
@@ -867,9 +874,9 @@ confirm_post_apply_rules() {
   local confirm=""
   echo
   echo "规则已临时应用。请立刻用新窗口测试 SSH/业务端口。"
-  echo "如果 ${timeout} 秒内没有输入 YES，脚本会自动清理本次规则，避免锁死。"
-  read -r -t "${timeout}" -p "确认新连接可访问并保存开机恢复？输入 YES: " confirm < /dev/tty || confirm=""
-  [[ "${confirm}" == "YES" ]]
+  echo "如果 ${timeout} 秒内没有输入 YES/yes/y，脚本会自动清理本次规则，避免锁死。"
+  read -r -t "${timeout}" -p "确认新连接可访问并保存开机恢复？输入 YES/yes/y: " confirm < /dev/tty || confirm=""
+  is_yes_confirmation "${confirm}"
 }
 
 parse_update_mode() {

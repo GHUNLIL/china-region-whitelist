@@ -220,6 +220,8 @@ class FirewallLibTests(unittest.TestCase):
         self.assertIn("白名单配置主界面", script)
         self.assertIn("confirm_post_apply_rules", script)
         self.assertIn("CN_POST_APPLY_TIMEOUT", script)
+        self.assertIn("is_yes_confirmation", script)
+        self.assertIn("YES/yes/y", script)
         self.assertIn("未确认新连接可访问，正在自动清理本次规则。", script)
         self.assertIn("新增端口白名单", script)
         self.assertIn("修改端口白名单", script)
