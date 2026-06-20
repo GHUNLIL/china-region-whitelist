@@ -40,6 +40,7 @@ def run_firewall_lib(command: str) -> subprocess.CompletedProcess[str]:
         f"DATA_DIR={FIXTURES}; "
         f"CN_REGIONS_TSV={FIXTURES / 'regions.tsv'}; "
         f"CN_COUNTRY_FILE={FIXTURES / 'country' / 'CN.txt'}; "
+        f"CN_BUNDLED_ASN_DIR={FIXTURES / 'asn'}; "
         f"CN_ASN_CACHE_DIR={FIXTURES / 'asn'}; "
         f"{command}"
     )
@@ -198,9 +199,17 @@ class FirewallLibTests(unittest.TestCase):
 
         self.assertNotIn("cn_install_python()", script)
         self.assertNotIn("apt-get install -y python3", script)
+        self.assertNotIn("cn_python_for_update", script)
         self.assertIn("CN_REGIONS_TSV", script)
-        self.assertIn("cn_python_for_update", script)
-        self.assertIn("默认运行不需要 Python", script)
+        self.assertIn("cn_download_repo_archive", script)
+        self.assertIn("cn_validate_prebuilt_data_dir", script)
+        self.assertIn("GitHub 预制 IP 数据", script)
+
+    def test_firewall_lib_prefers_bundled_asn_prefixes(self):
+        result = run_firewall_lib("CN_ASN_OFFLINE=1 CN_ASN_CACHE_DIR=/tmp/missing-asn-cache cn_collect_asn_cidrs AS64500")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines(), ["203.0.113.0/24"])
 
     def test_install_script_supports_update_and_restore_modes(self):
         script = INSTALL_SH.read_text(encoding="utf-8")
@@ -221,8 +230,9 @@ class FirewallLibTests(unittest.TestCase):
         self.assertIn("cn_load_config_codes", script)
         self.assertIn("cn_load_config_port_policies", script)
         self.assertIn("update_region_data_visual", script)
-        self.assertIn("同步最新全国/省份 IP 数据", script)
+        self.assertIn("同步最新预制 IP 数据", script)
         self.assertIn("prepare_data_for_mode required", script)
+        self.assertIn("cn_use_runtime_data_if_available", script)
         self.assertIn("白名单配置主界面", script)
         self.assertIn("confirm_post_apply_rules", script)
         self.assertIn("CN_POST_APPLY_TIMEOUT", script)
@@ -248,7 +258,8 @@ class FirewallLibTests(unittest.TestCase):
         self.assertIn("china-region-whitelist.service", script)
         self.assertIn("systemctl enable", script)
         self.assertIn("restore --offline", script)
-        self.assertIn("--output-dir", script)
+        self.assertIn("CN_REPO_ARCHIVE_URL", script)
+        self.assertIn("CN_RUNTIME_DIR}/data", script)
         self.assertIn("CN_FORWARD_MODE", script)
         self.assertIn("CN_FORWARD_IFACES", script)
         self.assertIn("CN_ASNS", script)
@@ -355,6 +366,8 @@ class FirewallLibTests(unittest.TestCase):
 
         self.assertIn("CN_GITHUB_PROXY=\"${CN_GITHUB_PROXY:-https://gh-proxy.com/}\"", firewall_lib)
         self.assertIn("cn_github_proxy_url", firewall_lib)
+        self.assertIn("CN_REPO_ARCHIVE_URL", firewall_lib)
+        self.assertIn("cn_download_repo_archive", firewall_lib)
         self.assertIn("CN_ASN_BASE_URL", firewall_lib)
         self.assertIn("cn_proxy_url_if_github", firewall_lib)
         self.assertIn("CN_GITHUB_PROXY:-https://gh-proxy.com/", bootstrap)

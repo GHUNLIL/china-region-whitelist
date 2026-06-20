@@ -14,6 +14,7 @@
 - `data/regions.tsv`：服务器 Bash 运行时读取的省份索引
 - `data/country/CN.txt`：APNIC 国家级中国大陆 IPv4 段，用于“全国/CN”
 - `data/regions/*.txt`：本地省级 CIDR 段
+- `data/asn/*.txt`：可选的预制 ASN IPv4 段，例如 `AS16509`
 - `tools/region_tool.py`：开发/测试用的本地数据解析工具
 - `tools/firewall_lib.sh`：防火墙辅助函数
 - `tests/fixtures/asn/`：测试用 ASN 前缀夹具
@@ -59,7 +60,7 @@ sudo bash install.sh apply
 - 修改端口白名单：选择已有端口策略后重新编辑
 - 删除端口白名单：选择已有端口策略后删除
 - 手动编辑全部端口白名单：直接输入完整规则文本
-- 同步最新全国/省份 IP 数据：从 APNIC 和 metowolf/iplist 拉取最新数据到 `/var/lib/china-region-whitelist/data`，需要 Python 和网络
+- 同步最新预制 IP 数据：从 GitHub 拉取仓库已预制好的 `data/` 到 `/var/lib/china-region-whitelist/data`，包含全国、省份和预制 ASN，不需要 Python
 - 清理已应用规则和开机配置：删除本脚本创建的防火墙规则、保存配置和 systemd 开机恢复
 
 端口白名单优先级高于整机默认全局白名单：如果某个端口命中了端口策略，来源必须匹配该端口自己的白名单，否则即使来源在全局白名单里也会被拒绝。`全国` / `中国` / `CN` 会使用国家级 `data/country/CN.txt`，不会再展开成所有省份 CIDR；只有单端口选择具体省份时才读取省级 CIDR 文件。
@@ -94,7 +95,7 @@ CN_FIREWALL_BACKEND=nft bash <(curl -fsSL https://gh-proxy.com/https://raw.githu
 CN_FIREWALL_BACKEND=iptables bash <(curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/GHUNLIL/china-region-whitelist/main/bootstrap.sh) apply
 ```
 
-默认随包数据已经由仓库定时同步。若你确实要在服务器上实时同步上游数据，可以运行下面命令；这一步需要服务器有 `python3/python`：
+默认随包数据已经由仓库定时同步。若需要在服务器上更新到 GitHub 仓库里的最新预制数据，可以运行下面命令；这一步只需要 `curl` 和 `tar`，不需要 Python：
 
 ```bash
 bash <(curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/GHUNLIL/china-region-whitelist/main/bootstrap.sh) update-data
@@ -144,19 +145,13 @@ bash -n install.sh tools/firewall_lib.sh
 
 `apply` 会拒绝所有未命中白名单的入站流量，包括 SSH。脚本会检测当前 SSH 客户端 IP，并询问是否加入本次白名单，建议保留默认 `Y`。
 
-国家级 `CN` IPv4 数据来自 APNIC delegated stats，省级 CIDR 数据来自 `metowolf/iplist`。默认模式不会在服务器上访问上游数据源；如果需要最新数据，重新运行 `bootstrap.sh` 拉取仓库最新包即可。ASN 前缀来自 `ipverse/as-ip-blocks` 的每日聚合 IPv4 数据，首次添加 ASN 或运行 `update-asn` 时需要访问 GitHub raw；默认同样会走 `https://gh-proxy.com/`。若服务器缺少 `nftables`、`iptables` 或 `ipset`，脚本会尝试使用系统默认软件源安装依赖；这一步可能访问发行版软件源。
+国家级 `CN` IPv4 数据来自 APNIC delegated stats，省级 CIDR 数据来自 `metowolf/iplist`，这些数据由 GitHub Actions 生成后预制进仓库。服务器默认不会直接访问 APNIC/metowolf，也不需要 Python。已预制的 ASN 会优先从 `data/asn/` 读取；未预制的 ASN 才会从 `ipverse/as-ip-blocks` 拉取，默认同样会走 `https://gh-proxy.com/`。若服务器缺少 `nftables`、`iptables` 或 `ipset`，脚本会尝试使用系统默认软件源安装依赖；这一步可能访问发行版软件源。
 
 默认 GitHub 访问会经过 `https://gh-proxy.com/`。如果需要换代理或直连：
 
 ```bash
 CN_GITHUB_PROXY=https://your-proxy.example/ bash <(curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/GHUNLIL/china-region-whitelist/main/bootstrap.sh) apply
 CN_GITHUB_PROXY=direct bash <(curl -fsSL https://raw.githubusercontent.com/GHUNLIL/china-region-whitelist/main/bootstrap.sh) apply
-```
-
-实时同步上游时，也可以覆盖上游 IP 数据源：
-
-```bash
-sudo CN_DATA_BASE_URL=https://your-mirror.example/iplist/data/cncity bash /opt/china-region-whitelist/install.sh apply --update
 ```
 
 ASN 前缀源也可以覆盖：

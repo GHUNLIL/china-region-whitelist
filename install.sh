@@ -17,7 +17,7 @@ usage() {
   ./install.sh restore [--offline|--update|--update-optional]
                          使用上次保存的省份配置重新应用规则
   ./install.sh update-data
-                         只同步最新省级 CIDR 数据到 /var/lib/china-region-whitelist
+                         从 GitHub 同步最新预制 IP 数据到 /var/lib/china-region-whitelist
   ./install.sh update-asn
                          重新同步已保存的 ASN 白名单并恢复规则
   ./install.sh status    查看当前托管规则和开机恢复状态
@@ -28,7 +28,7 @@ usage() {
   默认整机托管本机 INPUT 和 DNAT 入站转发流量，包含 flvx/nftables 端口转发。
   可为单端口或端口范围设置更高优先级的白名单。
   使用 flvx/nftables 转发时，建议保留默认 nft 后端；本脚本会使用独立 nft 表，不会改写 flvx 表。
-  apply/dry-run 默认使用仓库内置数据，不需要 Python；如需实时同步上游数据，加 --update。
+  apply/dry-run 默认使用仓库内置数据；加 --update 会从 GitHub 拉取最新预制数据，不需要 Python。
   建议先运行 dry-run，确认省份和命令后再 apply。
 EOF
 }
@@ -676,9 +676,9 @@ confirm_clear_rules_visual() {
 
 update_region_data_visual() {
   visual_clear_screen
-  printf '同步最新全国/省份 IP 数据\n\n' >&2
-  printf '全国 CN 来源：APNIC delegated stats\n' >&2
-  printf '省份来源：metowolf/iplist cncity\n\n' >&2
+  printf '同步最新预制 IP 数据\n\n' >&2
+  printf '将从 GitHub 仓库下载已预制好的 data/ 数据包。\n' >&2
+  printf '服务器端不需要 Python；全国、省份和预制 ASN 数据由仓库定时生成。\n\n' >&2
   if [[ "${EUID}" -ne 0 ]]; then
     printf '此操作需要 root 权限，请使用 sudo 或 root 用户运行。\n' >&2
     pause_visual
@@ -687,7 +687,7 @@ update_region_data_visual() {
   if prepare_data_for_mode required; then
     printf '\n数据已同步到：%s/data\n' "${CN_RUNTIME_DIR}" >&2
   else
-    printf '\n同步失败。请确认服务器安装了 python3/python，并且可以访问上游数据源。\n' >&2
+    printf '\n同步失败。请确认服务器可以访问 GitHub 或已设置可用的 CN_GITHUB_PROXY。\n' >&2
   fi
   pause_visual
 }
@@ -735,7 +735,7 @@ interactive_config_editor() {
         "删除端口白名单" "delete_port" \
         "手动编辑全部端口白名单" "manual_ports" \
         "查看当前配置" "view" \
-        "同步最新全国/省份 IP 数据" "update_data" \
+        "同步最新预制 IP 数据" "update_data" \
         "完成并继续" "done"
     else
       visual_single_select \
@@ -747,7 +747,7 @@ interactive_config_editor() {
         "删除端口白名单" "delete_port" \
         "手动编辑全部端口白名单" "manual_ports" \
         "查看当前配置" "view" \
-        "同步最新全国/省份 IP 数据" "update_data" \
+        "同步最新预制 IP 数据" "update_data" \
         "清理已应用规则和开机配置" "clear_applied" \
         "完成并继续" "done"
     fi
@@ -952,11 +952,12 @@ prepare_data_for_mode() {
       ;;
     optional)
       if ! cn_update_runtime_data; then
-        echo "同步上游数据失败，将使用仓库内置数据继续。" >&2
+        echo "同步 GitHub 预制数据失败，将使用本机已有数据继续。" >&2
+        cn_use_runtime_data_if_available
       fi
       ;;
     offline)
-      true
+      cn_use_runtime_data_if_available
       ;;
     *)
       echo "未知更新模式：${mode}" >&2
@@ -1177,7 +1178,7 @@ main() {
     update-data)
       parse_update_mode required "$@"
       prepare_data_for_mode "${UPDATE_MODE}"
-      echo "数据已同步到：${CN_RUNTIME_DIR}"
+      echo "数据已同步到：${CN_RUNTIME_DIR}/data"
       ;;
     update-asn) update_asn_rules ;;
     status) status_rules ;;

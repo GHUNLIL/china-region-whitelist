@@ -18,6 +18,12 @@ jobs:
           python-version: "3.x"
       - name: Refresh bundled region data
         run: python tools/prepare_data.py --refresh-index --force
+      - name: Refresh bundled ASN data
+        run: |
+          mkdir -p data/asn
+          curl -fsSL --connect-timeout 20 --retry 2 --retry-delay 1 \
+            https://raw.githubusercontent.com/ipverse/as-ip-blocks/master/as/16509/ipv4-aggregated.txt \
+            -o data/asn/AS16509.txt
       - name: Validate
         run: |
           python -m unittest discover -s tests -v
@@ -30,6 +36,6 @@ jobs:
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/cncity.md data/regions.json data/regions.tsv data/regions data/country
-          git commit -m "Update region CIDR data"
+          git add data/cncity.md data/regions.json data/regions.tsv data/regions data/country data/asn
+          git commit -m "Update bundled IP data"
           git push

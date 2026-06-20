@@ -2,11 +2,11 @@
 set -euo pipefail
 
 CN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CN_PREPARE_DATA="${CN_ROOT}/tools/prepare_data.py"
 REGIONS_JSON="${REGIONS_JSON:-${CN_ROOT}/data/regions.json}"
 DATA_DIR="${DATA_DIR:-${CN_ROOT}/data}"
 CN_REGIONS_TSV="${CN_REGIONS_TSV:-${DATA_DIR}/regions.tsv}"
 CN_COUNTRY_FILE="${CN_COUNTRY_FILE:-${DATA_DIR}/country/CN.txt}"
+CN_BUNDLED_ASN_DIR="${CN_BUNDLED_ASN_DIR:-${DATA_DIR}/asn}"
 CN_RUNTIME_DIR="${CN_RUNTIME_DIR:-/var/lib/china-region-whitelist}"
 CN_CONFIG_FILE="${CN_CONFIG_FILE:-/etc/china-region-whitelist.conf}"
 CN_SERVICE_NAME="china-region-whitelist.service"
@@ -18,22 +18,12 @@ CN_NFT_SET_NAME="allowed_v4"
 CN_NFT_HOOK_PRIORITY="${CN_NFT_HOOK_PRIORITY:--10}"
 CN_PORT_POLICIES="${CN_PORT_POLICIES:-}"
 CN_GITHUB_PROXY="${CN_GITHUB_PROXY:-https://gh-proxy.com/}"
-CN_UPSTREAM_INDEX_URL="https://raw.githubusercontent.com/metowolf/iplist/master/docs/cncity.md"
-CN_UPSTREAM_DATA_BASE_URL="https://raw.githubusercontent.com/metowolf/iplist/master/data/cncity"
-CN_COUNTRY_URL="${CN_COUNTRY_URL:-https://ftp.apnic.net/stats/apnic/delegated-apnic-latest}"
+CN_REPO_OWNER="${CN_REPO_OWNER:-GHUNLIL}"
+CN_REPO_NAME="${CN_REPO_NAME:-china-region-whitelist}"
+CN_REPO_BRANCH="${CN_REPO_BRANCH:-main}"
+CN_REPO_ARCHIVE_URL="${CN_REPO_ARCHIVE_URL:-https://github.com/${CN_REPO_OWNER}/${CN_REPO_NAME}/archive/refs/heads/${CN_REPO_BRANCH}.tar.gz}"
 CN_ASN_BASE_URL="${CN_ASN_BASE_URL:-https://raw.githubusercontent.com/ipverse/as-ip-blocks/master/as}"
 CN_ASN_CACHE_DIR="${CN_ASN_CACHE_DIR:-${CN_RUNTIME_DIR}/asn}"
-
-cn_python_for_update() {
-  if command -v python3 >/dev/null 2>&1; then
-    python3 "$@"
-  elif command -v python >/dev/null 2>&1; then
-    python "$@"
-  else
-    echo "实时同步上游数据需要 python3/python；默认运行不需要 Python，可使用仓库内置数据继续。" >&2
-    return 127
-  fi
-}
 
 cn_set_data_dir() {
   local output_dir="$1"
@@ -41,11 +31,12 @@ cn_set_data_dir() {
   DATA_DIR="${output_dir}/data"
   CN_REGIONS_TSV="${DATA_DIR}/regions.tsv"
   CN_COUNTRY_FILE="${DATA_DIR}/country/CN.txt"
+  CN_BUNDLED_ASN_DIR="${DATA_DIR}/asn"
 }
 
-cn_github_proxy_url() {
+cn_github_proxy_url_with_proxy() {
   local raw_url="$1"
-  local proxy="${CN_GITHUB_PROXY}"
+  local proxy="$2"
   case "${proxy}" in
     ""|direct|none)
       printf '%s\n' "${raw_url}"
@@ -57,6 +48,10 @@ cn_github_proxy_url() {
       printf '%s/%s\n' "${proxy}" "${raw_url}"
       ;;
   esac
+}
+
+cn_github_proxy_url() {
+  cn_github_proxy_url_with_proxy "$1" "${CN_GITHUB_PROXY}"
 }
 
 cn_proxy_url_if_github() {
@@ -96,33 +91,81 @@ cn_use_runtime_data_if_available() {
   fi
 }
 
+cn_download_repo_archive() {
+  local target="$1"
+  local proxy_candidates proxy url
+  proxy_candidates="${CN_GITHUB_PROXIES:-${CN_GITHUB_PROXY} direct}"
+  proxy_candidates="${proxy_candidates//,/ }"
+
+  for proxy in ${proxy_candidates}; do
+    url="$(cn_github_proxy_url_with_proxy "${CN_REPO_ARCHIVE_URL}" "${proxy}")"
+    echo "正在下载 GitHub 预制 IP 数据包：${url}" >&2
+    if curl -fL --connect-timeout 20 --retry 2 --retry-delay 1 -o "${target}" "${url}"; then
+      return 0
+    fi
+    echo "下载失败，尝试下一个地址。" >&2
+  done
+
+  echo "无法下载 GitHub 预制 IP 数据包，请检查网络或设置 CN_GITHUB_PROXY。" >&2
+  return 1
+}
+
+cn_validate_prebuilt_data_dir() {
+  local data_dir="$1"
+  if [[ ! -s "${data_dir}/regions.json" || ! -s "${data_dir}/regions.tsv" || ! -s "${data_dir}/country/CN.txt" || ! -d "${data_dir}/regions" ]]; then
+    echo "预制 IP 数据不完整：${data_dir}" >&2
+    return 1
+  fi
+}
+
 cn_update_runtime_data() {
   cn_require_root
+  if [[ -z "${CN_RUNTIME_DIR}" || "${CN_RUNTIME_DIR}" == "/" ]]; then
+    echo "运行目录不安全：CN_RUNTIME_DIR=${CN_RUNTIME_DIR}" >&2
+    return 1
+  fi
+  local command_name
+  for command_name in curl tar mktemp; do
+    if ! command -v "${command_name}" >/dev/null 2>&1; then
+      echo "同步 GitHub 预制 IP 数据需要 ${command_name}。" >&2
+      return 1
+    fi
+  done
+
+  local work_dir archive_path source_dir next_data status
   mkdir -p "${CN_RUNTIME_DIR}"
+  work_dir="$(mktemp -d)"
+  archive_path="${work_dir}/repo.tar.gz"
+  source_dir="${work_dir}/source"
+  next_data="${CN_RUNTIME_DIR}/data.new"
+  status=0
 
-  local -a args
-  args=(--output-dir "${CN_RUNTIME_DIR}" --refresh-index --force)
-  if [[ -n "${CN_INDEX_URL:-}" ]]; then
-    args+=(--index-url "${CN_INDEX_URL}")
-  else
-    args+=(--index-url "$(cn_github_proxy_url "${CN_UPSTREAM_INDEX_URL}")")
-  fi
-  if [[ -n "${CN_DATA_BASE_URL:-}" ]]; then
-    args+=(--data-base-url "${CN_DATA_BASE_URL}")
-  else
-    args+=(--data-base-url "$(cn_github_proxy_url "${CN_UPSTREAM_DATA_BASE_URL}")")
-  fi
-  args+=(--country-url "${CN_COUNTRY_URL}")
+  (
+    set -e
+    mkdir -p "${source_dir}"
+    cn_download_repo_archive "${archive_path}"
+    tar -xzf "${archive_path}" --strip-components=1 -C "${source_dir}"
+    cn_validate_prebuilt_data_dir "${source_dir}/data"
+    rm -rf "${next_data}"
+    cp -a "${source_dir}/data" "${next_data}"
+    cn_validate_prebuilt_data_dir "${next_data}"
+    rm -rf "${CN_RUNTIME_DIR}/data"
+    mv "${next_data}" "${CN_RUNTIME_DIR}/data"
+  ) || status=$?
 
-  echo "正在同步最新省级 CIDR 数据（需要 python3；默认安装流程不需要同步）..." >&2
-  cn_python_for_update "${CN_PREPARE_DATA}" "${args[@]}"
+  rm -rf "${work_dir}" "${next_data}"
+  if [[ "${status}" -ne 0 ]]; then
+    return "${status}"
+  fi
+
   cn_set_data_dir "${CN_RUNTIME_DIR}"
+  echo "已同步 GitHub 预制 IP 数据：${CN_RUNTIME_DIR}/data" >&2
 }
 
 cn_require_region_index() {
   if [[ ! -r "${CN_REGIONS_TSV}" ]]; then
     echo "缺少省份索引：${CN_REGIONS_TSV}" >&2
-    echo "请重新拉取最新仓库，或在有 Python 的机器上运行 tools/prepare_data.py 生成 data/regions.tsv。" >&2
+    echo "请重新运行 bootstrap.sh 或 install.sh update-data 拉取 GitHub 预制数据。" >&2
     return 1
   fi
 }
@@ -199,7 +242,7 @@ cn_collect_cidrs() {
 cn_collect_country_cidrs() {
   if [[ ! -r "${CN_COUNTRY_FILE}" ]]; then
     echo "缺少国家级 CN CIDR 文件：${CN_COUNTRY_FILE}" >&2
-    echo "请重新拉取最新仓库，或运行 update-data 同步 data/country/CN.txt。" >&2
+    echo "请重新运行 bootstrap.sh 或 install.sh update-data 拉取 GitHub 预制数据。" >&2
     return 1
   fi
   sed 's/[[:space:]]*$//' "${CN_COUNTRY_FILE}" | awk 'NF && $0 !~ /^#/'
@@ -277,10 +320,15 @@ cn_download_asn_prefixes() {
 }
 
 cn_collect_asn_cidrs() {
-  local raw_asn asn file
+  local raw_asn asn file bundled_file
   for raw_asn in "$@"; do
     [[ -n "${raw_asn}" ]] || continue
     asn="$(cn_normalize_asn "${raw_asn}")" || return 1
+    bundled_file="${CN_BUNDLED_ASN_DIR}/AS${asn}.txt"
+    if [[ "${CN_ASN_FORCE_UPDATE:-0}" != "1" && -s "${bundled_file}" ]]; then
+      awk 'NF && $0 !~ /^#/ && $0 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\/[0-9]+$/ {print $0}' "${bundled_file}"
+      continue
+    fi
     file="${CN_ASN_CACHE_DIR}/AS${asn}.txt"
     if [[ ! -s "${file}" || "${CN_ASN_FORCE_UPDATE:-0}" == "1" ]]; then
       cn_download_asn_prefixes "${asn}" "${file}" || return 1
