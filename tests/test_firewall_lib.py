@@ -75,8 +75,8 @@ class FirewallLibTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(
-            "iptables -C FORWARD -j CN_REGION_WHITELIST 2>/dev/null || "
-            "iptables -I FORWARD 1 -j CN_REGION_WHITELIST",
+            "iptables -C FORWARD -m conntrack --ctstate DNAT -j CN_REGION_WHITELIST 2>/dev/null || "
+            "iptables -I FORWARD 1 -m conntrack --ctstate DNAT -j CN_REGION_WHITELIST",
             result.stdout,
         )
 
@@ -85,13 +85,13 @@ class FirewallLibTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(
-            "iptables -C FORWARD -i tun0 -j CN_REGION_WHITELIST 2>/dev/null || "
-            "iptables -I FORWARD 1 -i tun0 -j CN_REGION_WHITELIST",
+            "iptables -C FORWARD -i tun0 -m conntrack --ctstate DNAT -j CN_REGION_WHITELIST 2>/dev/null || "
+            "iptables -I FORWARD 1 -i tun0 -m conntrack --ctstate DNAT -j CN_REGION_WHITELIST",
             result.stdout,
         )
         self.assertIn(
-            "iptables -C FORWARD -o tun0 -j CN_REGION_WHITELIST 2>/dev/null || "
-            "iptables -I FORWARD 1 -o tun0 -j CN_REGION_WHITELIST",
+            "iptables -C FORWARD -o tun0 -m conntrack --ctstate DNAT -j CN_REGION_WHITELIST 2>/dev/null || "
+            "iptables -I FORWARD 1 -o tun0 -m conntrack --ctstate DNAT -j CN_REGION_WHITELIST",
             result.stdout,
         )
         self.assertNotIn("iptables -C FORWARD -j CN_REGION_WHITELIST", result.stdout)
@@ -143,8 +143,8 @@ class FirewallLibTests(unittest.TestCase):
         self.assertIn("ipset create cn_region_whitelist hash:net family inet -exist", result.stdout)
         self.assertIn("ipset add cn_region_whitelist 10.0.0.0/8 -exist", result.stdout)
         self.assertIn("ipset add cn_region_whitelist 198.51.100.88 -exist", result.stdout)
-        self.assertIn("iptables -C FORWARD -i tun0 -j CN_REGION_WHITELIST", result.stdout)
-        self.assertIn("iptables -C FORWARD -o tun0 -j CN_REGION_WHITELIST", result.stdout)
+        self.assertIn("iptables -C FORWARD -i tun0 -m conntrack --ctstate DNAT -j CN_REGION_WHITELIST", result.stdout)
+        self.assertIn("iptables -C FORWARD -o tun0 -m conntrack --ctstate DNAT -j CN_REGION_WHITELIST", result.stdout)
 
     def test_firewall_lib_rejects_unknown_region_code(self):
         result = run_firewall_lib("cn_render_apply_commands '' all '' '' '' 123456")
@@ -255,8 +255,8 @@ class FirewallLibTests(unittest.TestCase):
         self.assertIn("203.0.113.0/24", result.stdout)
         self.assertIn("198.51.100.88", result.stdout)
         self.assertIn("chain forward {", result.stdout)
-        self.assertIn("ip saddr @allowed_v4 accept", result.stdout)
-        self.assertIn("meta nfproto ipv4 reject", result.stdout)
+        self.assertIn("ct status dnat ip saddr @allowed_v4 accept", result.stdout)
+        self.assertIn("ct status dnat meta nfproto ipv4 reject", result.stdout)
         self.assertNotIn("nft add element inet china_region_whitelist allowed_v4", result.stdout)
         self.assertNotIn("table inet flvx", result.stdout)
 
@@ -307,7 +307,7 @@ class FirewallLibTests(unittest.TestCase):
         self.assertIn("198.51.100.7/32", result.stdout)
         self.assertIn("tcp dport @port_policy_1_ports ip saddr @port_policy_1_v4 accept", result.stdout)
         self.assertIn("tcp dport @port_policy_1_ports meta nfproto ipv4 reject", result.stdout)
-        self.assertIn("ct original proto-dst @port_policy_2_ports ip saddr @port_policy_2_v4 accept", result.stdout)
+        self.assertIn("ct status dnat ct original proto-dst @port_policy_2_ports ip saddr @port_policy_2_v4 accept", result.stdout)
         policy_reject = result.stdout.index("tcp dport @port_policy_1_ports meta nfproto ipv4 reject")
         global_accept = result.stdout.index("ip saddr @allowed_v4 accept")
         self.assertLess(policy_reject, global_accept)

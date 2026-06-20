@@ -680,11 +680,11 @@ cn_render_apply_commands_iptables() {
     if [[ "${forward_mode}" == "selected" ]]; then
       local iface
       for iface in ${forward_ifaces}; do
-        cn_add_jump_command FORWARD -i "${iface}"
-        cn_add_jump_command FORWARD -o "${iface}"
+        cn_add_jump_command FORWARD -i "${iface}" -m conntrack --ctstate DNAT
+        cn_add_jump_command FORWARD -o "${iface}" -m conntrack --ctstate DNAT
       done
     else
-      cn_add_jump_command FORWARD
+      cn_add_jump_command FORWARD -m conntrack --ctstate DNAT
     fi
   fi
   cn_for_each_port_policy "${port_policies}" cn_render_iptables_port_policy_rules
@@ -788,14 +788,14 @@ cn_render_apply_commands_nft() {
     cn_for_each_port_policy "${port_policies}" cn_render_nft_port_policy_forward_rules
     if [[ "${forward_mode}" == "selected" ]]; then
       for iface in ${forward_ifaces}; do
-        printf '    iifname "%s" ip saddr @%s accept\n' "${iface}" "${CN_NFT_SET_NAME}"
-        printf '    iifname "%s" meta nfproto ipv4 reject\n' "${iface}"
-        printf '    oifname "%s" ip saddr @%s accept\n' "${iface}" "${CN_NFT_SET_NAME}"
-        printf '    oifname "%s" meta nfproto ipv4 reject\n' "${iface}"
+        printf '    iifname "%s" ct status dnat ip saddr @%s accept\n' "${iface}" "${CN_NFT_SET_NAME}"
+        printf '    iifname "%s" ct status dnat meta nfproto ipv4 reject\n' "${iface}"
+        printf '    oifname "%s" ct status dnat ip saddr @%s accept\n' "${iface}" "${CN_NFT_SET_NAME}"
+        printf '    oifname "%s" ct status dnat meta nfproto ipv4 reject\n' "${iface}"
       done
     else
-      printf '    ip saddr @%s accept\n' "${CN_NFT_SET_NAME}"
-      printf '    meta nfproto ipv4 reject\n'
+      printf '    ct status dnat ip saddr @%s accept\n' "${CN_NFT_SET_NAME}"
+      printf '    ct status dnat meta nfproto ipv4 reject\n'
     fi
     printf '  }\n'
   fi
@@ -832,8 +832,8 @@ cn_render_nft_port_policy_forward_rules() {
   local index="$1"
   local _port_spec="$2"
   local _selectors="$3"
-  printf '    ct original proto-dst @port_policy_%s_ports ip saddr @port_policy_%s_v4 accept\n' "${index}" "${index}"
-  printf '    ct original proto-dst @port_policy_%s_ports meta nfproto ipv4 reject\n' "${index}"
+  printf '    ct status dnat ct original proto-dst @port_policy_%s_ports ip saddr @port_policy_%s_v4 accept\n' "${index}" "${index}"
+  printf '    ct status dnat ct original proto-dst @port_policy_%s_ports meta nfproto ipv4 reject\n' "${index}"
 }
 
 cn_render_clear_commands() {

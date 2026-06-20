@@ -1,6 +1,6 @@
 # 中国大陆 IP 白名单一键脚本
 
-这个项目用于在普通中国大陆服务器上按国家/省级 IP 段限制整机访问：只有交互选择的中国大陆 `CN`、省/自治区/直辖市、当前 SSH 客户端 IP、以及可选的 ASN 白名单可以访问服务器，其他来源访问任意端口都会被拒绝。默认同时托管本机 `INPUT` 和转发 `FORWARD` 流量，因此本机服务、转发端口、TUN/TAP/WireGuard 接口，或 flvx 这类 nftables 转发规则都会走同一套整机白名单。
+这个项目用于在普通中国大陆服务器上按国家/省级 IP 段限制入站访问：只有交互选择的中国大陆 `CN`、省/自治区/直辖市、当前 SSH 客户端 IP、以及可选的 ASN 白名单可以访问服务器，其他来源访问入站端口会被拒绝。脚本不管理 `OUTPUT` 出站流量，服务器向外连接不受限制；默认只托管本机 `INPUT` 和 DNAT/端口转发类入站 `FORWARD` 流量，因此本机服务和 flvx 这类 nftables 端口转发会走同一套整机白名单。
 
 仓库会通过 GitHub Actions 每小时同步一次上游 CIDR 数据，并把国家级 `CN` CIDR、省份索引和省级 CIDR 文件一起打进仓库。服务器运行 `apply` 或 `dry-run` 时默认直接使用随包数据，不需要安装 Python。
 
@@ -78,11 +78,11 @@ sudo bash install.sh apply
 
 如果当前环境没有可用 TTY，脚本会自动退回文本输入模式。也可以设置 `CN_VISUAL_MENU=0` 关闭键盘菜单。
 
-默认整机托管本机服务和所有 `FORWARD` 转发流量。如果你的转发都由 [Sagit-chu/flvx](https://github.com/Sagit-chu/flvx) 的 nftables 模式管理，flvx 转发端口会自动受同一白名单保护。本脚本在 nft 后端下只创建 `table inet china_region_whitelist`，不会删除或重写 flvx 使用的 `table inet flvx`。
+默认整机托管本机服务和 DNAT/端口转发类入站 `FORWARD` 流量，不托管 `OUTPUT`，也不会拦截普通出站转发。如果你的转发都由 [Sagit-chu/flvx](https://github.com/Sagit-chu/flvx) 的 nftables 模式管理，flvx 转发端口会自动受同一白名单保护。本脚本在 nft 后端下只创建 `table inet china_region_whitelist`，不会删除或重写 flvx 使用的 `table inet flvx`。
 
 nftables 本身没有“国家等于 CN”的内置匹配，国家/省份/ASN 白名单最终都需要转换成 IPv4 CIDR set。nft 后端会用单次 `nft -f` 批量加载整张表，并在写入前去掉已被大网段覆盖的小网段，避免逐条 `nft add element` 造成的慢速导入和 interval overlap。
 
-高级用法：如果只想限制本机服务、不托管 `FORWARD`，可以设置 `CN_FORWARD_MODE_DEFAULT=none`；如果只想托管指定接口，可以设置 `CN_FORWARD_MODE_DEFAULT=selected CN_FORWARD_IFACES_DEFAULT="tun0 wg0"`。
+高级用法：如果只想限制本机服务、不托管 DNAT 入站转发，可以设置 `CN_FORWARD_MODE_DEFAULT=none`；如果只想托管指定接口上的 DNAT 入站转发，可以设置 `CN_FORWARD_MODE_DEFAULT=selected CN_FORWARD_IFACES_DEFAULT="tun0 wg0"`。
 
 `apply` 成功后会保存选择到 `/etc/china-region-whitelist.conf`，并安装 `china-region-whitelist.service`。服务器重启后，systemd 会自动按保存的省份、ASN 和端口策略恢复规则；恢复时默认使用随包数据和本地 ASN 缓存，不依赖网络或 Python。
 

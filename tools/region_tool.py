@@ -174,10 +174,10 @@ def render_apply_commands(
     if not no_forward:
         if selected_forward_ifaces:
             for iface in selected_forward_ifaces:
-                commands.append(add_jump_command("FORWARD", ["-i", iface]))
-                commands.append(add_jump_command("FORWARD", ["-o", iface]))
+                commands.append(add_jump_command("FORWARD", ["-i", iface, "-m", "conntrack", "--ctstate", "DNAT"]))
+                commands.append(add_jump_command("FORWARD", ["-o", iface, "-m", "conntrack", "--ctstate", "DNAT"]))
         else:
-            commands.append(add_jump_command("FORWARD", []))
+            commands.append(add_jump_command("FORWARD", ["-m", "conntrack", "--ctstate", "DNAT"]))
     commands.extend(
         [
             f"iptables -A {CHAIN_NAME} -i lo -j ACCEPT",
@@ -234,9 +234,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--forward-iface",
         action="append",
         default=[],
-        help="limit FORWARD management to packets entering or leaving this interface",
+        help="limit DNAT inbound FORWARD management to packets entering or leaving this interface",
     )
-    render.add_argument("--no-forward", action="store_true", help="do not manage FORWARD traffic")
+    render.add_argument("--no-forward", action="store_true", help="do not manage DNAT inbound FORWARD traffic")
     render.add_argument("codes", nargs="+")
 
     subparsers.add_parser("render-clear")

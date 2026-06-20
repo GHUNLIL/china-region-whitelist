@@ -25,7 +25,7 @@ usage() {
 
 说明：
   apply 会让未命中白名单的所有入站端口全部拒绝。
-  默认整机托管本机 INPUT 和 FORWARD 转发流量，包含 flvx/nftables 转发端口。
+  默认整机托管本机 INPUT 和 DNAT 入站转发流量，包含 flvx/nftables 端口转发。
   可为单端口或端口范围设置更高优先级的白名单。
   使用 flvx/nftables 转发时，建议保留默认 nft 后端；本脚本会使用独立 nft 表，不会改写 flvx 表。
   apply/dry-run 默认使用仓库内置数据，不需要 Python；如需实时同步上游数据，加 --update。
@@ -775,11 +775,11 @@ interactive_select_forward_interfaces() {
     all|"")
       SELECTED_FORWARD_MODE="all"
       echo >&2
-      echo "整机白名单范围：本机服务 INPUT + 所有 FORWARD 转发流量（包含 flvx/nftables 转发）。" >&2
+      echo "整机白名单范围：本机服务 INPUT + DNAT 入站转发流量（包含 flvx/nftables 端口转发）。" >&2
       ;;
     none)
       echo >&2
-      echo "整机白名单范围：仅本机服务 INPUT，不托管 FORWARD 转发。" >&2
+      echo "整机白名单范围：仅本机服务 INPUT，不托管 DNAT 入站转发。" >&2
       ;;
     selected)
       local iface
@@ -792,7 +792,7 @@ interactive_select_forward_interfaces() {
         exit 1
       fi
       echo >&2
-      echo "整机白名单范围：本机服务 INPUT + 指定 FORWARD 接口 ${SELECTED_FORWARD_IFACES[*]}。" >&2
+      echo "整机白名单范围：本机服务 INPUT + 指定接口的 DNAT 入站转发 ${SELECTED_FORWARD_IFACES[*]}。" >&2
       ;;
     *)
       echo "未知 CN_FORWARD_MODE_DEFAULT：${SELECTED_FORWARD_MODE}，可选 all/none/selected。" >&2
@@ -805,9 +805,9 @@ describe_forward_selection() {
   local mode="$1"
   local ifaces="$2"
   case "${mode}" in
-    all) echo "转发托管：所有 FORWARD 流量" ;;
+    all) echo "转发托管：所有 DNAT 入站转发流量" ;;
     none) echo "转发托管：关闭，仅限制本机入站端口" ;;
-    selected) echo "转发托管：指定接口 ${ifaces}（匹配入/出方向）" ;;
+    selected) echo "转发托管：指定接口 ${ifaces} 的 DNAT 入站转发" ;;
     *) echo "转发托管：未知模式 ${mode}" ;;
   esac
 }
