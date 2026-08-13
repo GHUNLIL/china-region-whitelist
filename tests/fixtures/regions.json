@@ -7,6 +7,11 @@
     "file": "country/CN.txt",
     "url": "https://example.invalid/CN.txt"
   },
+  "operator_access": {
+    "name": "三大运营商和教育网",
+    "code": "CN-ISP",
+    "file": "country/CN-ISP.txt"
+  },
   "provinces": [
     {
       "name": "测试省",

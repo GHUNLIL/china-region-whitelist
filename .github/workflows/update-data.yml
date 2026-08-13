@@ -18,6 +18,8 @@ jobs:
           python-version: "3.x"
       - name: Refresh bundled region data
         run: python tools/prepare_data.py --refresh-index --force
+      - name: Refresh carrier and CERNET access data
+        run: python tools/prepare_operator_access.py
       - name: Refresh bundled ASN data
         run: |
           mkdir -p data/asn
@@ -36,6 +38,6 @@ jobs:
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/cncity.md data/regions.json data/regions.tsv data/regions data/country data/asn
+          git add data/cncity.md data/regions.json data/regions.tsv data/regions data/country data/asn data/operator-access
           git commit -m "Update bundled IP data"
           git push
