@@ -19,6 +19,7 @@ DEFAULT_INDEX_URL = "https://raw.githubusercontent.com/metowolf/iplist/master/do
 DEFAULT_DATA_BASE_URL = "https://raw.githubusercontent.com/metowolf/iplist/master/data/cncity"
 DEFAULT_COUNTRY_URL = "https://ftp.apnic.net/stats/apnic/delegated-apnic-latest"
 COUNTRY_FILE = "country/CN.txt"
+OPERATOR_ACCESS_FILE = "country/CN-ISP.txt"
 
 ROW_RE = re.compile(r"^\|([^|]+)\|([^|]+)\|$")
 CODE_RE = re.compile(r"/(\d{6})\.txt$")
@@ -209,6 +210,12 @@ def main() -> int:
             "code": "CN",
             "file": COUNTRY_FILE,
             "url": args.country_url,
+        },
+        "operator_access": {
+            "name": "三大运营商和教育网（排除独立机房/云 ASN）",
+            "code": "CN-ISP",
+            "file": OPERATOR_ACCESS_FILE,
+            "generated_by": "tools/prepare_operator_access.py",
         },
         "provinces": provinces,
     }

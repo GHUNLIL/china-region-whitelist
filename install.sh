@@ -229,13 +229,19 @@ load_province_menu_options() {
 append_unique_selected_code() {
   local candidate="$1"
   local existing
+  if cn_is_operator_access_selector "${candidate}"; then
+    SELECTED_CODES=("CN-ISP")
+    return 0
+  fi
   if cn_is_all_china_selector "${candidate}"; then
     SELECTED_CODES=("CN")
     return 0
   fi
   if ((${#SELECTED_CODES[@]} > 0)); then
     for existing in "${SELECTED_CODES[@]}"; do
-      cn_is_all_china_selector "${existing}" && return 0
+      if cn_is_all_china_selector "${existing}" || cn_is_operator_access_selector "${existing}"; then
+        return 0
+      fi
       [[ "${existing}" == "${candidate}" ]] && return 0
     done
   fi
@@ -267,11 +273,35 @@ join_by_semicolon() {
 
 codes_summary() {
   local -a codes=("$@")
-  if [[ "${#codes[@]}" -eq 1 ]] && cn_is_all_china_selector "${codes[0]}"; then
-    printf '全国'
+  if [[ "${#codes[@]}" -eq 1 ]] && cn_is_operator_access_selector "${codes[0]}"; then
+    printf '全国（三大运营商和教育网，排除机房 ASN）'
+  elif [[ "${#codes[@]}" -eq 1 ]] && cn_is_all_china_selector "${codes[0]}"; then
+    printf '全国（全部 CN）'
   else
     printf '%s 个省份' "${#codes[@]}"
   fi
+}
+
+interactive_select_national_scope() {
+  NATIONAL_SCOPE_CODE="CN"
+  if visual_menu_available; then
+    visual_single_select \
+      "全国白名单范围" \
+      "全部中国大陆 IPv4（原全国 CN）" "CN" \
+      "仅三大运营商和教育网（排除独立机房/云 ASN）" "CN-ISP"
+    NATIONAL_SCOPE_CODE="${VISUAL_SELECTED_VALUE}"
+    return
+  fi
+
+  local scope
+  echo "全国白名单可选：" >&2
+  echo "  1. 全部中国大陆 IPv4（原全国 CN）" >&2
+  echo "  2. 仅三大运营商和教育网（排除独立机房/云 ASN）" >&2
+  scope="$(read_from_tty "全国范围 [1/2，默认 1]: ")"
+  case "${scope:-1}" in
+    2|CN-ISP|cn-isp|ISP|isp|三网|三网教育|运营商) NATIONAL_SCOPE_CODE="CN-ISP" ;;
+    *) NATIONAL_SCOPE_CODE="CN" ;;
+  esac
 }
 
 asns_summary() {
@@ -304,15 +334,16 @@ interactive_select_codes() {
     load_province_menu_options
     local -a menu_items
     local province_value i
-    menu_items=("全国（中国大陆 CN）" "__ALL__")
+    menu_items=("全国（进入范围子选项）" "__NATIONAL__")
     for ((i = 0; i < ${#PROVINCE_MENU_LABELS[@]}; i++)); do
       menu_items+=("${PROVINCE_MENU_LABELS[$i]}" "${PROVINCE_MENU_CODES[$i]}")
     done
 
     visual_multi_select "请选择整机默认白名单省份" 0 "${menu_items[@]}"
     for province_value in "${VISUAL_SELECTED_VALUES[@]}"; do
-      if [[ "${province_value}" == "__ALL__" ]]; then
-        append_unique_selected_code "CN"
+      if [[ "${province_value}" == "__NATIONAL__" ]]; then
+        interactive_select_national_scope
+        append_unique_selected_code "${NATIONAL_SCOPE_CODE}"
       else
         append_unique_selected_code "${province_value}"
       fi
@@ -323,7 +354,7 @@ interactive_select_codes() {
   echo "请选择省/自治区/直辖市：" >&2
   cn_show_provinces >&2
   echo >&2
-  echo "输入编号或省份名称，多个用空格/逗号分隔；输入 全国 表示中国大陆 CN 国家级 IP。" >&2
+  echo "输入编号或省份名称，多个用空格/逗号分隔；输入 全国 可继续选择全部 CN 或三网教育 ASN。" >&2
 
   local province_input
   province_input="$(read_from_tty "省份: ")"
@@ -335,8 +366,11 @@ interactive_select_codes() {
   local province_selector province_code
   while IFS= read -r province_selector; do
     [[ -n "${province_selector}" ]] || continue
-    if cn_is_all_china_selector "${province_selector}"; then
-      append_unique_selected_code "CN"
+    if cn_is_operator_access_selector "${province_selector}"; then
+      append_unique_selected_code "CN-ISP"
+    elif cn_is_all_china_selector "${province_selector}"; then
+      interactive_select_national_scope
+      append_unique_selected_code "${NATIONAL_SCOPE_CODE}"
     else
       province_code="$(cn_resolve_province "${province_selector}")"
       append_unique_selected_code "${province_code}"
@@ -387,7 +421,7 @@ interactive_select_port_policies_line() {
   echo "可选：端口优先白名单。命中端口策略时，会先按该端口自己的白名单判断。" >&2
   echo "格式：端口=白名单；多条用英文或中文分号分隔。" >&2
   echo "示例：22=上海市,AS16509,1.2.3.4/32;10000-20000=广东省,江苏省" >&2
-  echo "白名单可写：全国/中国、具体省份、AS12345、IPv4 或 IPv4 CIDR。留空则只使用整机默认白名单。" >&2
+  echo "白名单可写：全国/中国、三网教育/CN-ISP、具体省份、AS12345、IPv4 或 IPv4 CIDR。留空则只使用整机默认白名单。" >&2
   read_manual_port_policies "端口优先白名单（可空）: "
 }
 
@@ -424,7 +458,10 @@ build_port_policy_visual() {
   done
 
   load_province_menu_options
-  menu_items=("全国（中国大陆 CN）" "全国")
+  menu_items=(
+    "全国（全部中国大陆 CN）" "全国"
+    "全国（仅三大运营商和教育网，排除机房 ASN）" "CN-ISP"
+  )
   for ((i = 0; i < ${#PROVINCE_MENU_LABELS[@]}; i++)); do
     menu_items+=("${PROVINCE_MENU_LABELS[$i]}" "${PROVINCE_MENU_NAMES[$i]}")
   done
@@ -501,8 +538,12 @@ codes_detail() {
   local -a codes=("$@")
   local -a names
   local code name
+  if [[ "${#codes[@]}" -eq 1 ]] && cn_is_operator_access_selector "${codes[0]}"; then
+    printf '全国（三大运营商和教育网，排除独立机房/云 ASN）'
+    return
+  fi
   if [[ "${#codes[@]}" -eq 1 ]] && cn_is_all_china_selector "${codes[0]}"; then
-    printf '全国'
+    printf '全国（全部中国大陆 CN）'
     return
   fi
   names=()

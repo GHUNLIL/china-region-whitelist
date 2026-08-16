@@ -1,6 +1,6 @@
 # 中国大陆 IP 白名单一键脚本
 
-这个项目用于在普通中国大陆服务器上按国家/省级 IP 段限制入站访问：只有交互选择的中国大陆 `CN`、省/自治区/直辖市、当前 SSH 客户端 IP、以及可选的 ASN 白名单可以访问服务器，其他来源访问入站端口会被拒绝。脚本不管理 `OUTPUT` 出站流量，服务器向外连接不受限制；默认只托管本机 `INPUT` 和 DNAT/端口转发类入站 `FORWARD` 流量，因此本机服务和 flvx 这类 nftables 端口转发会走同一套整机白名单。
+这个项目用于在普通中国大陆服务器上按国家/运营商/省级 IP 段限制入站访问：只有交互选择的中国大陆 `CN`、三大运营商与教育网 `CN-ISP`、省/自治区/直辖市、当前 SSH 客户端 IP、以及可选的 ASN 白名单可以访问服务器，其他来源访问入站端口会被拒绝。脚本不管理 `OUTPUT` 出站流量，服务器向外连接不受限制；默认只托管本机 `INPUT` 和 DNAT/端口转发类入站 `FORWARD` 流量，因此本机服务和 flvx 这类 nftables 端口转发会走同一套整机白名单。
 
 仓库会通过 GitHub Actions 每小时同步一次上游 CIDR 数据，并把 APNIC 国家级 `CN` IPv4、省份索引和省级 CIDR 文件一起打进仓库。服务器运行 `apply` 或 `dry-run` 时默认直接使用随包数据，不需要安装 Python。
 
@@ -13,9 +13,12 @@
 - `data/regions.json`：省份索引
 - `data/regions.tsv`：服务器 Bash 运行时读取的省份索引
 - `data/country/CN.txt`：APNIC 国家级中国大陆 IPv4 段，用于“全国/CN”
+- `data/country/CN-ISP.txt`：中国大陆三大运营商与教育网 IPv4 段，已排除独立机房/云 ASN
+- `data/operator-access/excluded-asns.tsv`：本次生成时识别并排除的运营商机房 ASN 审计表
 - `data/regions/*.txt`：本地省级 CIDR 段
 - `data/asn/*.txt`：可选的预制 ASN IPv4 段，例如 `AS16509`
 - `tools/region_tool.py`：开发/测试用的本地数据解析工具
+- `tools/prepare_operator_access.py`：生成 `CN-ISP` 并剔除独立 IDC/云 ASN
 - `tools/firewall_lib.sh`：防火墙辅助函数
 - `tests/fixtures/asn/`：测试用 ASN 前缀夹具
 - `tests/`：不触碰真实防火墙的本地测试
@@ -54,7 +57,7 @@ sudo bash install.sh apply
 
 脚本默认进入键盘配置主界面：上/下键移动，空格勾选或取消，回车确认。如果已经保存过配置，主界面会先载入 `/etc/china-region-whitelist.conf` 作为当前草案，并提供这些操作：
 
-- 编辑全局白名单：勾选 `全国（中国大陆 CN）`，或按省/自治区/直辖市逐个勾选
+- 编辑全局白名单：选择 `全国` 后进入二级范围，可选全部中国大陆 `CN`，或仅三大运营商和教育网 `CN-ISP`；也可按省/自治区/直辖市逐个勾选
 - 编辑全局 ASN 白名单：适合加入国外管理服务器所在云厂商 ASN，例如 `AS16509 AS14061`
 - 新增端口白名单：输入单端口或端口范围，再勾选这个端口允许的省份，也可以补充 ASN/IP/CIDR
 - 修改端口白名单：选择已有端口策略后重新编辑
@@ -63,7 +66,7 @@ sudo bash install.sh apply
 - 同步最新预制 IP 数据：从 GitHub 拉取仓库已预制好的 `data/` 到 `/var/lib/china-region-whitelist/data`，包含全国、省份和预制 ASN，不需要 Python
 - 清理已应用规则和开机配置：删除本脚本创建的防火墙规则、保存配置和 systemd 开机恢复
 
-端口白名单优先级高于整机默认全局白名单：如果某个端口命中了端口策略，来源必须匹配该端口自己的白名单，否则即使来源在全局白名单里也会被拒绝。`全国` / `中国` / `CN` 会使用国家级 `data/country/CN.txt`，不会再展开成所有省份 CIDR；只有单端口选择具体省份时才读取省级 CIDR 文件。
+端口白名单优先级高于整机默认全局白名单：如果某个端口命中了端口策略，来源必须匹配该端口自己的白名单，否则即使来源在全局白名单里也会被拒绝。`全国` / `中国` / `CN` 会使用国家级 `data/country/CN.txt`；`三网教育` / `CN-ISP` 会使用排除独立机房 ASN 后的 `data/country/CN-ISP.txt`；只有选择具体省份时才读取省级 CIDR 文件。
 
 端口策略也支持高级手动输入完整格式：
 
@@ -74,6 +77,7 @@ sudo bash install.sh apply
 白名单项可写：
 
 - `全国` / `中国` / `CN`
+- `三网教育` / `三大运营商和教育网` / `CN-ISP`
 - 省份或直辖市，例如 `上海市`、`广东省`
 - ASN，例如 `AS16509`
 - IPv4 或 IPv4 CIDR，例如 `1.2.3.4`、`1.2.3.0/24`
@@ -145,7 +149,11 @@ bash -n install.sh tools/firewall_lib.sh
 
 `apply` 会拒绝所有未命中白名单的入站流量，包括 SSH。脚本会检测当前 SSH 客户端 IP，并询问是否加入本次白名单，建议保留默认 `Y`。
 
-国家级 `CN` IPv4 数据来自 APNIC delegated stats，省级 CIDR 数据来自 `metowolf/iplist`，这些数据由 GitHub Actions 生成后预制进仓库。服务器默认不会直接访问 APNIC/metowolf，也不需要 Python。已预制的 ASN 会优先从 `data/asn/` 读取；未预制的 ASN 才会从 `ipverse/as-ip-blocks` 拉取，默认同样会走 `https://gh-proxy.com/`。若服务器缺少 `nftables`、`iptables` 或 `ipset`，脚本会尝试使用系统默认软件源安装依赖；这一步可能访问发行版软件源。
+国家级 `CN` IPv4 数据来自 APNIC delegated stats，省级 CIDR 数据来自 `metowolf/iplist`。`CN-ISP` 以 [gaoyifan/china-operator-ip](https://github.com/gaoyifan/china-operator-ip) 的 BGP 运营商前缀为基础，通过 [xingpingcn/china-mainland-asn](https://github.com/xingpingcn/china-mainland-asn) 获取三大运营商 ASN 候选，按 RIPEstat 当前 ASN holder 名称识别带有 `IDC`、`IDCC`、`Data Center/Centre` 或 `Cloud` 的独立机房 ASN，再用 [ipverse/as-ip-blocks](https://github.com/ipverse/as-ip-blocks) 前缀剔除并与 APNIC `CN` 段取交集。排除结果记录在 `data/operator-access/excluded-asns.tsv`，GitHub Actions 会定时重新生成。
+
+`CN-ISP` 是基于 BGP origin ASN 的过滤，不是“家庭宽带”识别：独立注册为 IDC/云的运营商 ASN 会被排除；但如果机房 IP 与家宽/移动用户共同由同一个运营商骨干或省网 ASN 宣告，ASN 层面无法区分，仍可能被允许。反过来，尚未被上游正确归类的接入网段也可能被漏掉。建议先用 `dry-run` 检查，并保留当前 SSH 客户端 IP 的临时白名单。
+
+这些数据由 GitHub Actions 生成后预制进仓库。服务器默认不会直接访问 APNIC、运营商数据源或 RIPEstat，也不需要 Python。已预制的 ASN 会优先从 `data/asn/` 读取；未预制的 ASN 才会从 `ipverse/as-ip-blocks` 拉取，默认同样会走 `https://gh-proxy.com/`。若服务器缺少 `nftables`、`iptables` 或 `ipset`，脚本会尝试使用系统默认软件源安装依赖；这一步可能访问发行版软件源。
 
 默认 GitHub 访问会经过 `https://gh-proxy.com/`。如果需要换代理或直连：
 
@@ -166,6 +174,7 @@ sudo CN_ASN_BASE_URL=https://your-mirror.example/as-ip-blocks/as bash /opt/china
 
 ```bash
 python tools/prepare_data.py --refresh-index --force --ipdb /path/to/ipipfree.ipdb
+python tools/prepare_operator_access.py
 ```
 
 然后把整个目录复制到服务器即可。

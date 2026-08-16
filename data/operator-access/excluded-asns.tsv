@@ -1,0 +1,81 @@
+# Dedicated carrier IDC/cloud ASNs excluded from CN-ISP.txt.
+# Classification uses the current RIPEstat ASN holder name.
+carrier	asn	holder
+chinanet	AS4816	CHINANET-IDC-GD - China Telecom (Group)
+chinanet	AS4835	CHINANET-IDC-SN - China Telecom (Group)
+chinanet	AS23650	CHINANET-Jiangsu-Province-IDC - AS Number for CHINANET jiangsu province backbone
+chinanet	AS23724	CHINANET-IDC-BJ-AP - IDC, China Telecommunications Corporation
+chinanet	AS38283	CHINANET-SCIDC-AS-AP - CHINANET SiChuan Telecom Internet Data Center
+chinanet	AS58461	CT-HangZhou-IDC - No.288,Fu-chun Road
+chinanet	AS58466	CT-Guangzhou-IDC - CHINANET Guangdong province network
+chinanet	AS58539	CHINATELECOM-Hebei-Langfang-IDC - Langfang,Hebei province, P.R.China
+chinanet	AS58540	CHINATELECOM-SHANDONG-JINAN-IDC - Jinan,250000
+chinanet	AS58541	CHINATELECOM-SHANDONG-QINGDAO-IDC - Qingdao,266000
+chinanet	AS58543	CHINATELECOM-Guangdong-IDC - Guangdong
+chinanet	AS58563	CHINATELECOM-Hubei-IDC - CHINANET Hubei province network
+chinanet	AS58772	ChinaNet-Fujian-Fuzhou-IDC - CHINANET Fujian province Fuzhou IDC network
+chinanet	AS59223	CT-Qinghai-IDC - CHINANET Qinghai province IDC network
+chinanet	AS63835	CT-HuNan-Changsha-IDC - No.293,Wanbao Avenue
+chinanet	AS63838	CT-HuNan-Hengyang-IDC - Hengyang
+chinanet	AS132437	CHINANET-HUAIBEI-IDC - China Telecom
+chinanet	AS132833	CHINANET-ANHUI-WUHU-NEWIDC - China Telecom
+chinanet	AS133774	CHINATELECOM-FUJIAN-FUZHOU-IDC1 - Fuzhou
+chinanet	AS133775	CHINATELECOM-Fujian-Xiamen-IDC1 - Xiamen
+chinanet	AS133776	CHINATELECOM-Fujian-Quanzhou-IDC1 - Quanzhou
+chinanet	AS134238	CT-Jiangxi-IDC - CHINANET Jiangx province IDC network
+chinanet	AS134425	CHINANET-HEFEI-QIMENLU-IDC - China Telecom
+chinanet	AS134756	ChinaNet-NANJING-JISHAN-IDC - CHINANET Nanjing Jishan IDC network
+chinanet	AS134760	ChinaNet-Hebei-Shijiazhuang-IDC - Shijiazhuang IDC network, CHINANET Hebei province
+chinanet	AS134761	CHINANET-NINGXIA-ZHONGWEI-IDC - CHINANET NINGXIA province ZHONGWEI IDC network
+chinanet	AS134763	CT-DongGuan-IDC - CHINANET Guangdong province network
+chinanet	AS134764	CT-FoShan-IDC - CHINANET Guangdong province network
+chinanet	AS134765	CHINANET-YUNNAN-IDC1 - CHINANET Yunnan province IDC1 network
+chinanet	AS134766	CHINANET-YUNNAN-IDC2 - CHINANET Yunnan province IDC2 network
+chinanet	AS134768	CHINANET-SHAANXI-CLOUD-BASE - CHINANET SHAANXI province Cloud Base network
+chinanet	AS134769	ChinaNet-Jiangsu-Changzhou-Liyang-IDC - ChinaNet Jiangsu Changzhou Liyang IDC network
+chinanet	AS134770	CHINANET-JIANGSU-SUZHOU-TAIHU-IDC - CHINANET Jiangsu province Suzhou taihu IDC network
+chinanet	AS135089	CHINANET-Guangzhou-Southbase-IDC - China Telecom
+chinanet	AS136188	CHINATELECOM-ZHEJIANG-NINGBO-IDC - NINGBO, ZHEJIANG Province, P.R.China.
+chinanet	AS136190	CHINATELECOM-ZHEJIANG-JINHUA-IDC - JINHUA, ZHEJIANG Province, P.R.China.
+chinanet	AS136195	CHINATELECOM-QINGDAO-CLOUDBASE - Qingdao, Shandong Province, P.R.China.
+chinanet	AS137693	CHINATELECOM-Guangxi-Nanning-IDC - CHINATELECOM Guangxi Nanning IDC networkdescr: Nanning , Guangxi Province, P.R.China.
+chinanet	AS137697	CHINATELECOM-JiangSu-YangZhou-IDC - CHINATELECOM JiangSu YangZhou IDC networkdescr: YangZhou , Jiangsu Province, P.R.China.
+chinanet	AS137699	CHINATELECOM-Jiangsu-Suqian-IDC - CHINATELECOM Jiangsu Suqian IDC network
+chinanet	AS138169	ASEAN-INTERNATIONAL-INFORMATION-GARDEN-IDC - China Telecom
+chinanet	AS138570	CT-Anqing-IDC - China Telecom
+chinanet	AS138991	CHINATELECOM-GUANGXI-LIUZHOU-IDC - China Telecom
+chinanet	AS139462	CHINANET-GY-AS - CHINANET Guizhou Yilong IDC
+chinanet	AS139587	CHINANET-Henan-Zhengzhou-Shujugang-IDC - China Telecom Henan Zhengzhou Shujugang IDC network
+chinanet	AS139887	ChinaNet-Yantai-IDC - ChinaNet Shandong Yantai IDC network
+chinanet	AS140527	CHINANET-ANHUI-WUHU-IDC - China Telecom
+chinanet	AS141679	CHINATELECOM-IDC-BTHBD-AP - China Telecom Beijing Tianjin Hebei Big Data Industry Park Branch
+chinanet	AS141998	CHINANET-LANZHOU-IDC - China Telecom
+chinanet	AS142608	ChinaNet-Anhui-Bengbu-IDC - China Telecom
+chinanet	AS146966	CHINANET-YANGZHOUNORTH-IDC - China Telecom
+chinanet	AS147038	CHINANET-QINGYANG-IDC - China Telecom
+chinanet	AS148969	CHINANET-JIANGXI-LINKONG-IDC - China Telecom
+chinanet	AS148981	CHINANET-HUBEI-SHIYAN-IDC - China Telecom
+chinanet	AS149178	CT-HEFEI-NANGANG-IDC - China Telecom
+chinanet	AS149837	ChinaNet-JX-Yunhe-IDC - China Telecom
+chinanet	AS149979	ChinaNet-Hunan-Across-region-IDC - China Telecom
+chinanet	AS150145	CHINANET-HUBEI-SANXIA-IDC - China Telecom
+chinanet	AS151185	CT-XIANGYANG-IDC2 - China Telecom
+chinanet	AS151397	CT-eSurfingCloud-CDN - China Telecom
+unicom	AS10206	CUZW-CN - China Unicom Zhongwei Cloud
+unicom	AS17789	CNCGROUP-SH-IDC - CNCGROUP IP network of ShangHai IDC
+unicom	AS134543	UNICOM-DongGuan-IDC - China Unicom Guangdong IP network
+unicom	AS135061	UNICOM-ShenZhen-IDC - China Unicom Guangdong IP network
+unicom	AS136958	UNICOM-GuangZhou-IDC - China Unicom Guangdong IP network
+unicom	AS136959	UNICOM-FuoShan-IDC - China Unicom Guangdong IP network
+unicom	AS137539	UNICOM-Harbin-IDC - China Unicom
+unicom	AS139007	UNICOM-NM-WuLanChaBu-IDC - UNICOM InnerMongolia province network
+unicom	AS140707	UNICOM-NXZW-IDC - UNICOM Ningxia province network
+unicom	AS140716	UNICOM-JSWX-IDC - UNICOM JiangSu WuXi IDC network
+unicom	AS140717	UNICOM-JSSZ-IDC - UNICOM JiangSu Suzhou IDC network
+unicom	AS140886	UNICOM-GX-IDC - UNICOM Guangxi province network
+unicom	AS140979	UNICOM-SHFT-IDC - China Unicom Shanghai FuTe IDC network
+unicom	AS152120	UNICOM-TJGC-IDC - China Unicom TianJing GaoCun IDC network
+cmcc	AS132510	ShanXiMCC-IDC - IDC ShanXi China Mobile communications corporation
+cmcc	AS135054	CMNET-HAINAN-IDC - China Mobile Group Hainan Co., Ltd.
+cmcc	AS138407	CMNET-GZIDC-CN - The Internet Data Center of Guizhou Mobile Communication Company Limited
+cmcc	AS139080	CMNET-SCIDC-CN - The Internet Data Center of Sichuan Mobile Communication Company Limited

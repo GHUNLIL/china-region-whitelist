@@ -76,6 +76,8 @@ def normalize_name(name: str) -> str:
 
 
 def find_region_file(metadata: dict, code: str) -> str:
+    if is_operator_access_selector(code):
+        return str(metadata.get("operator_access", {}).get("file", "country/CN-ISP.txt"))
     if is_china_selector(code):
         return str(metadata.get("country", {}).get("file", "country/CN.txt"))
     for province in metadata["provinces"]:
@@ -86,6 +88,21 @@ def find_region_file(metadata: dict, code: str) -> str:
 
 def is_china_selector(selector: str) -> bool:
     return selector in {"CN", "cn", "中国", "全国", "中国大陆", "大陆", "all", "ALL"}
+
+
+def is_operator_access_selector(selector: str) -> bool:
+    return selector in {
+        "CN-ISP",
+        "cn-isp",
+        "ISP",
+        "isp",
+        "三网",
+        "三网教育",
+        "运营商",
+        "三大运营商",
+        "三大运营商和教育网",
+        "三大运营商与教育网",
+    }
 
 
 def collect_cidrs(metadata: dict, data_dir: Path, codes: list[str]) -> list[str]:

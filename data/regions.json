@@ -10,6 +10,12 @@
     "file": "country/CN.txt",
     "url": "https://ftp.apnic.net/stats/apnic/delegated-apnic-latest"
   },
+  "operator_access": {
+    "name": "三大运营商和教育网（排除独立机房/云 ASN）",
+    "code": "CN-ISP",
+    "file": "country/CN-ISP.txt",
+    "generated_by": "tools/prepare_operator_access.py"
+  },
   "provinces": [
     {
       "name": "北京市",

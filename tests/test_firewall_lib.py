@@ -2,6 +2,7 @@ import subprocess
 import sys
 import unittest
 import importlib.util
+import ipaddress
 from pathlib import Path
 
 
@@ -11,10 +12,19 @@ TOOL = ROOT / "tools" / "region_tool.py"
 INSTALL_SH = ROOT / "install.sh"
 FIREWALL_LIB = ROOT / "tools" / "firewall_lib.sh"
 BOOTSTRAP_SH = ROOT / "bootstrap.sh"
+PREPARE_OPERATOR_ACCESS = ROOT / "tools" / "prepare_operator_access.py"
 
 
 def load_prepare_data_module():
     spec = importlib.util.spec_from_file_location("prepare_data", ROOT / "tools" / "prepare_data.py")
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_prepare_operator_access_module():
+    spec = importlib.util.spec_from_file_location("prepare_operator_access", PREPARE_OPERATOR_ACCESS)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(module)
@@ -40,6 +50,7 @@ def run_firewall_lib(command: str) -> subprocess.CompletedProcess[str]:
         f"DATA_DIR={FIXTURES}; "
         f"CN_REGIONS_TSV={FIXTURES / 'regions.tsv'}; "
         f"CN_COUNTRY_FILE={FIXTURES / 'country' / 'CN.txt'}; "
+        f"CN_OPERATOR_ACCESS_FILE={FIXTURES / 'country' / 'CN-ISP.txt'}; "
         f"CN_BUNDLED_ASN_DIR={FIXTURES / 'asn'}; "
         f"CN_ASN_CACHE_DIR={FIXTURES / 'asn'}; "
         f"{command}"
@@ -69,6 +80,12 @@ class FirewallLibTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.splitlines(), ["198.18.0.0/15"])
+
+    def test_collects_operator_access_cidrs(self):
+        result = run_tool("collect-cidrs", "CN-ISP")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines(), ["100.64.0.0/10"])
 
     def test_renders_dry_run_commands_with_current_client_ip(self):
         result = run_tool("render-apply", "--client-ip", "198.51.100.88", "990000")
@@ -307,6 +324,15 @@ class FirewallLibTests(unittest.TestCase):
         self.assertNotIn("10.0.0.0/8", result.stdout)
         self.assertNotIn("172.16.0.0/12", result.stdout)
 
+    def test_firewall_lib_uses_operator_access_file_for_restricted_china(self):
+        result = run_firewall_lib(
+            "CN_FIREWALL_BACKEND=nft cn_render_apply_commands '' all '' '' '' CN-ISP"
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("100.64.0.0/10", result.stdout)
+        self.assertNotIn("198.18.0.0/15", result.stdout)
+
     def test_firewall_lib_uses_country_cn_for_port_policy_china(self):
         result = run_firewall_lib(
             "CN_FIREWALL_BACKEND=nft cn_render_apply_commands '' all '' '' '22=全国' 990000"
@@ -317,6 +343,15 @@ class FirewallLibTests(unittest.TestCase):
         self.assertIn("10.0.0.0/8", result.stdout)
         self.assertIn("set port_policy_1_v4 {", result.stdout)
         self.assertIn("198.18.0.0/15", result.stdout)
+
+    def test_firewall_lib_uses_operator_access_for_port_policy(self):
+        result = run_firewall_lib(
+            "CN_FIREWALL_BACKEND=nft cn_render_apply_commands '' all '' '' '22=CN-ISP' 990000"
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("set port_policy_1_v4 {", result.stdout)
+        self.assertIn("100.64.0.0/10", result.stdout)
 
     def test_firewall_lib_renders_nft_port_policy_before_global_rules(self):
         result = run_firewall_lib(
@@ -416,6 +451,39 @@ class FirewallLibTests(unittest.TestCase):
         )
 
         self.assertEqual(cidrs, ["123.184.0.0/13"])
+
+    def test_operator_access_builder_intersects_cn_and_subtracts_idc(self):
+        prepare_operator_access = load_prepare_operator_access_module()
+        networks = prepare_operator_access.build_access_networks(
+            ["10.0.0.0/8\n198.18.0.0/15\n"],
+            "10.0.0.0/8\n",
+            ["10.0.0.0/9\n"],
+        )
+
+        self.assertEqual(networks, [ipaddress.ip_network("10.128.0.0/9")])
+
+    def test_operator_access_builder_excludes_only_dedicated_data_center_names(self):
+        prepare_operator_access = load_prepare_operator_access_module()
+        carrier_asns = {"chinanet": [4134, 23724, 4809], "unicom": [], "cmcc": []}
+        names = {
+            4134: "CHINANET-BACKBONE - China Telecom",
+            23724: "CHINANET-IDC-BJ-AP - IDC, China Telecommunications Corporation",
+            4809: "CHINATELECOM-CORE-WAN-CN2 - China Telecom Next Generation Carrier Network",
+        }
+
+        excluded = prepare_operator_access.classify_excluded_asns(carrier_asns, names)
+
+        self.assertEqual(excluded, [("chinanet", 23724, names[23724])])
+
+    def test_operator_access_asn_parser_ignores_update_comment(self):
+        prepare_operator_access = load_prepare_operator_access_module()
+
+        self.assertEqual(
+            prepare_operator_access.parse_asn_list(
+                "// Updated date: UTC+0 2026-08-13 04:28:23\n4134,AS4809,4134\n"
+            ),
+            [4134, 4809],
+        )
 
 
 if __name__ == "__main__":
