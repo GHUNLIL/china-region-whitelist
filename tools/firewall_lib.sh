@@ -7,6 +7,8 @@ DATA_DIR="${DATA_DIR:-${CN_ROOT}/data}"
 CN_REGIONS_TSV="${CN_REGIONS_TSV:-${DATA_DIR}/regions.tsv}"
 CN_COUNTRY_FILE="${CN_COUNTRY_FILE:-${DATA_DIR}/country/CN.txt}"
 CN_BUNDLED_ASN_DIR="${CN_BUNDLED_ASN_DIR:-${DATA_DIR}/asn}"
+CN_HOME_BROADBAND_FILE="${CN_HOME_BROADBAND_FILE:-${DATA_DIR}/carriers/home-broadband.txt}"
+CN_HOME_BROADBAND_ASNS_FILE="${CN_HOME_BROADBAND_ASNS_FILE:-${DATA_DIR}/carriers/home-broadband-asns.tsv}"
 CN_RUNTIME_DIR="${CN_RUNTIME_DIR:-/var/lib/china-region-whitelist}"
 CN_CONFIG_FILE="${CN_CONFIG_FILE:-/etc/china-region-whitelist.conf}"
 CN_SERVICE_NAME="china-region-whitelist.service"
@@ -17,6 +19,8 @@ CN_NFT_TABLE="china_region_whitelist"
 CN_NFT_SET_NAME="allowed_v4"
 CN_NFT_HOOK_PRIORITY="${CN_NFT_HOOK_PRIORITY:--10}"
 CN_PORT_POLICIES="${CN_PORT_POLICIES:-}"
+CN_GLOBAL_IP_RULES="${CN_GLOBAL_IP_RULES:-}"
+CN_PORT_EXCEPTIONS="${CN_PORT_EXCEPTIONS:-}"
 CN_GITHUB_PROXY="${CN_GITHUB_PROXY:-https://gh-proxy.com/}"
 CN_REPO_OWNER="${CN_REPO_OWNER:-GHUNLIL}"
 CN_REPO_NAME="${CN_REPO_NAME:-china-region-whitelist}"
@@ -32,6 +36,8 @@ cn_set_data_dir() {
   CN_REGIONS_TSV="${DATA_DIR}/regions.tsv"
   CN_COUNTRY_FILE="${DATA_DIR}/country/CN.txt"
   CN_BUNDLED_ASN_DIR="${DATA_DIR}/asn"
+  CN_HOME_BROADBAND_FILE="${DATA_DIR}/carriers/home-broadband.txt"
+  CN_HOME_BROADBAND_ASNS_FILE="${DATA_DIR}/carriers/home-broadband-asns.tsv"
 }
 
 cn_github_proxy_url_with_proxy() {
@@ -86,7 +92,7 @@ cn_effective_firewall_backend() {
 }
 
 cn_use_runtime_data_if_available() {
-  if [[ -s "${CN_RUNTIME_DIR}/data/regions.json" && -d "${CN_RUNTIME_DIR}/data/regions" && -s "${CN_RUNTIME_DIR}/data/country/CN.txt" ]]; then
+  if [[ -s "${CN_RUNTIME_DIR}/data/regions.json" && -d "${CN_RUNTIME_DIR}/data/regions" && -s "${CN_RUNTIME_DIR}/data/country/CN.txt" && -s "${CN_RUNTIME_DIR}/data/carriers/home-broadband.txt" && -s "${CN_RUNTIME_DIR}/data/carriers/home-broadband-asns.tsv" ]]; then
     cn_set_data_dir "${CN_RUNTIME_DIR}"
   fi
 }
@@ -112,7 +118,7 @@ cn_download_repo_archive() {
 
 cn_validate_prebuilt_data_dir() {
   local data_dir="$1"
-  if [[ ! -s "${data_dir}/regions.json" || ! -s "${data_dir}/regions.tsv" || ! -s "${data_dir}/country/CN.txt" || ! -d "${data_dir}/regions" ]]; then
+  if [[ ! -s "${data_dir}/regions.json" || ! -s "${data_dir}/regions.tsv" || ! -s "${data_dir}/country/CN.txt" || ! -d "${data_dir}/regions" || ! -s "${data_dir}/carriers/home-broadband.txt" || ! -s "${data_dir}/carriers/home-broadband-asns.tsv" ]]; then
     echo "预制 IP 数据不完整：${data_dir}" >&2
     return 1
   fi
@@ -229,6 +235,10 @@ cn_collect_cidrs() {
       cn_collect_country_cidrs
       continue
     fi
+    if cn_is_home_broadband_selector "${code}"; then
+      cn_collect_home_broadband_cidrs
+      continue
+    fi
     region_file="$(cn_region_file_for_code "${code}")" || return 1
     full_path="${DATA_DIR}/${region_file}"
     if [[ ! -r "${full_path}" ]]; then
@@ -246,6 +256,32 @@ cn_collect_country_cidrs() {
     return 1
   fi
   sed 's/[[:space:]]*$//' "${CN_COUNTRY_FILE}" | awk 'NF && $0 !~ /^#/'
+}
+
+cn_is_home_broadband_selector() {
+  case "$1" in
+    HOME|home|Home|家庭宽带|普通家宽|三大运营商家宽|三大运营商公众接入网)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+cn_collect_home_broadband_cidrs() {
+  if [[ ! -r "${CN_HOME_BROADBAND_FILE}" ]]; then
+    echo "缺少三大运营商家宽 CIDR 文件：${CN_HOME_BROADBAND_FILE}" >&2
+    echo "请重新运行 bootstrap.sh 或 install.sh update-data 拉取 GitHub 预制数据。" >&2
+    return 1
+  fi
+  sed 's/[[:space:]]*$//' "${CN_HOME_BROADBAND_FILE}" | awk 'NF && $0 !~ /^#/'
+}
+
+cn_list_home_broadband_asns() {
+  if [[ ! -r "${CN_HOME_BROADBAND_ASNS_FILE}" ]]; then
+    echo "缺少三大运营商家宽 ASN 清单：${CN_HOME_BROADBAND_ASNS_FILE}" >&2
+    return 1
+  fi
+  awk -F '\t' 'NF && $0 !~ /^#/ && $1 ~ /^AS[0-9]+$/ {print $1}' "${CN_HOME_BROADBAND_ASNS_FILE}"
 }
 
 cn_province_name() {
@@ -404,6 +440,8 @@ cn_collect_selector_cidrs() {
     [[ -n "${selector}" ]] || continue
     if cn_is_all_china_selector "${selector}"; then
       cn_collect_country_cidrs
+    elif cn_is_home_broadband_selector "${selector}"; then
+      cn_collect_home_broadband_cidrs
     elif [[ "${selector}" =~ ^[Aa][Ss][0-9]+$ ]]; then
       asn="$(cn_normalize_asn "${selector}")" || return 1
       cn_collect_asn_cidrs "AS${asn}"
@@ -463,6 +501,8 @@ cn_validate_port_policies() {
       [[ -n "${selector}" ]] || continue
       if cn_is_all_china_selector "${selector}"; then
         true
+      elif cn_is_home_broadband_selector "${selector}"; then
+        true
       elif [[ "${selector}" =~ ^[Aa][Ss][0-9]+$ ]]; then
         asn="$(cn_normalize_asn "${selector}")" || return 1
         [[ -n "${asn}" ]] || return 1
@@ -474,6 +514,179 @@ cn_validate_port_policies() {
       fi
     done < <(cn_split_selector_list "${selectors}")
   done
+}
+
+cn_parse_ip_or_asn_action_rule() {
+  local raw_rule="$1"
+  local action value asn
+  raw_rule="$(cn_trim "${raw_rule}")"
+  case "${raw_rule}" in
+    +*) action="allow"; value="${raw_rule:1}" ;;
+    -*) action="deny"; value="${raw_rule:1}" ;;
+    *:*)
+      action="$(cn_trim "${raw_rule%%:*}")"
+      value="${raw_rule#*:}"
+      case "${action}" in
+        allow|ALLOW|Allow|允许|放行|白名单) action="allow" ;;
+        deny|DENY|Deny|block|BLOCK|Block|屏蔽|拒绝|禁止) action="deny" ;;
+        *)
+          echo "未知规则动作：${action}；只支持 allow/deny（或 +/-）。" >&2
+          return 1
+          ;;
+      esac
+      ;;
+    *)
+      echo "规则缺少 allow:/deny: 动作：${raw_rule}" >&2
+      return 1
+      ;;
+  esac
+  value="$(cn_trim "${value}")"
+  if [[ "${value}" =~ ^[Aa][Ss][0-9]+$ ]]; then
+    asn="$(cn_normalize_asn "${value}")" || return 1
+    printf '%s\tasn\tAS%s\n' "${action}" "${asn}"
+  elif [[ "${value}" != */* ]] && cn_is_ipv4_address "${value}" && cn_validate_ipv4_cidr "${value}"; then
+    printf '%s\tip\t%s\n' "${action}" "${value}"
+  else
+    echo "规则目标只支持单个 IPv4 或 ASN：${value}" >&2
+    return 1
+  fi
+}
+
+cn_validate_global_ip_rules() {
+  local rules="$1"
+  local raw_rule parsed action kind value seen_rows=""
+  [[ -n "$(cn_trim "${rules}")" ]] || return 0
+  while IFS= read -r raw_rule; do
+    raw_rule="$(cn_trim "${raw_rule}")"
+    [[ -n "${raw_rule}" ]] || continue
+    parsed="$(cn_parse_ip_or_asn_action_rule "${raw_rule}")" || return 1
+    IFS=$'\t' read -r action kind value <<<"${parsed}"
+    if [[ "${kind}" != "ip" ]]; then
+      echo "全局单 IP 规则不支持 ASN：${value}" >&2
+      return 1
+    fi
+    if awk -F '\t' -v value="${value}" -v action="${action}" '$1 == value && $2 != action {found=1} END {exit found ? 0 : 1}' <<<"${seen_rows}"; then
+      echo "同一全局 IP 同时配置了允许和屏蔽：${value}" >&2
+      return 1
+    fi
+    seen_rows+="${value}"$'\t'"${action}"$'\n'
+  done < <(cn_split_selector_list "${rules}")
+}
+
+cn_collect_global_ip_rule_values() {
+  local rules="$1"
+  local wanted_action="$2"
+  local raw_rule parsed action kind value
+  while IFS= read -r raw_rule; do
+    raw_rule="$(cn_trim "${raw_rule}")"
+    [[ -n "${raw_rule}" ]] || continue
+    parsed="$(cn_parse_ip_or_asn_action_rule "${raw_rule}")" || return 1
+    IFS=$'\t' read -r action kind value <<<"${parsed}"
+    if [[ "${action}" == "${wanted_action}" && "${kind}" == "ip" ]]; then
+      printf '%s\n' "${value}"
+    fi
+  done < <(cn_split_selector_list "${rules}") | awk '!seen[$0]++'
+}
+
+cn_validate_port_exceptions() {
+  local exceptions="$1"
+  local raw_exception port_spec rules raw_rule parsed action kind value seen_rows="" seen_ports=""
+  local -a exception_items
+  exceptions="${exceptions//；/;}"
+  [[ -n "$(cn_trim "${exceptions}")" ]] || return 0
+
+  IFS=';' read -r -a exception_items <<<"${exceptions}"
+  for raw_exception in "${exception_items[@]}"; do
+    raw_exception="$(cn_trim "${raw_exception}")"
+    [[ -n "${raw_exception}" ]] || continue
+    if [[ "${raw_exception}" != *=* ]]; then
+      echo "端口例外规则缺少 '='：${raw_exception}" >&2
+      return 1
+    fi
+    port_spec="$(cn_trim "${raw_exception%%=*}")"
+    rules="$(cn_trim "${raw_exception#*=}")"
+    if ! [[ "${port_spec}" =~ ^[0-9]{1,5}$ ]] || ! cn_validate_port_spec "${port_spec}"; then
+      echo "端口 IP/ASN 例外只支持单端口 1-65535：${port_spec}" >&2
+      return 1
+    fi
+    if grep -Fxq "${port_spec}" <<<"${seen_ports}"; then
+      echo "同一端口只能出现一条例外配置，请合并端口 ${port_spec} 的规则。" >&2
+      return 1
+    fi
+    seen_ports+="${port_spec}"$'\n'
+    if [[ -z "${rules}" ]]; then
+      echo "端口例外规则为空：${raw_exception}" >&2
+      return 1
+    fi
+    while IFS= read -r raw_rule; do
+      raw_rule="$(cn_trim "${raw_rule}")"
+      [[ -n "${raw_rule}" ]] || continue
+      parsed="$(cn_parse_ip_or_asn_action_rule "${raw_rule}")" || return 1
+      IFS=$'\t' read -r action kind value <<<"${parsed}"
+      if awk -F '\t' -v port="${port_spec}" -v kind="${kind}" -v value="${value}" -v action="${action}" '$1 == port && $2 == kind && $3 == value && $4 != action {found=1} END {exit found ? 0 : 1}' <<<"${seen_rows}"; then
+        echo "端口 ${port_spec} 的同一 ${kind} 同时配置了允许和屏蔽：${value}" >&2
+        return 1
+      fi
+      seen_rows+="${port_spec}"$'\t'"${kind}"$'\t'"${value}"$'\t'"${action}"$'\n'
+    done < <(cn_split_selector_list "${rules}")
+  done
+}
+
+cn_for_each_port_exception() {
+  local exceptions="$1"
+  local callback="$2"
+  local raw_exception port_spec rules index=0
+  local -a exception_items
+  exceptions="${exceptions//；/;}"
+  [[ -n "$(cn_trim "${exceptions}")" ]] || return 0
+  IFS=';' read -r -a exception_items <<<"${exceptions}"
+  for raw_exception in "${exception_items[@]}"; do
+    raw_exception="$(cn_trim "${raw_exception}")"
+    [[ -n "${raw_exception}" ]] || continue
+    port_spec="$(cn_trim "${raw_exception%%=*}")"
+    rules="$(cn_trim "${raw_exception#*=}")"
+    index=$((index + 1))
+    "${callback}" "${index}" "${port_spec}" "${rules}"
+  done
+}
+
+cn_collect_port_exception_values() {
+  local rules="$1"
+  local wanted_action="$2"
+  local wanted_kind="$3"
+  local raw_rule parsed action kind value
+  while IFS= read -r raw_rule; do
+    raw_rule="$(cn_trim "${raw_rule}")"
+    [[ -n "${raw_rule}" ]] || continue
+    parsed="$(cn_parse_ip_or_asn_action_rule "${raw_rule}")" || return 1
+    IFS=$'\t' read -r action kind value <<<"${parsed}"
+    if [[ "${action}" == "${wanted_action}" && "${kind}" == "${wanted_kind}" ]]; then
+      printf '%s\n' "${value}"
+    fi
+  done < <(cn_split_selector_list "${rules}") | awk '!seen[$0]++'
+}
+
+cn_list_asns_from_port_exceptions() {
+  local exceptions="$1"
+  local raw_exception rules raw_rule parsed action kind value
+  local -a exception_items
+  exceptions="${exceptions//；/;}"
+  [[ -n "$(cn_trim "${exceptions}")" ]] || return 0
+  IFS=';' read -r -a exception_items <<<"${exceptions}"
+  for raw_exception in "${exception_items[@]}"; do
+    raw_exception="$(cn_trim "${raw_exception}")"
+    [[ -n "${raw_exception}" && "${raw_exception}" == *=* ]] || continue
+    rules="$(cn_trim "${raw_exception#*=}")"
+    while IFS= read -r raw_rule; do
+      raw_rule="$(cn_trim "${raw_rule}")"
+      [[ -n "${raw_rule}" ]] || continue
+      parsed="$(cn_parse_ip_or_asn_action_rule "${raw_rule}")" || return 1
+      IFS=$'\t' read -r action kind value <<<"${parsed}"
+      if [[ "${kind}" == "asn" ]]; then
+        printf '%s\n' "${value}"
+      fi
+    done < <(cn_split_selector_list "${rules}")
+  done | awk '!seen[$0]++'
 }
 
 cn_list_asns_from_port_policies() {
@@ -653,6 +866,197 @@ cn_render_nft_port_set_definition() {
   printf '%s}\n' "${indent}"
 }
 
+cn_collect_port_exception_cidrs() {
+  local rules="$1"
+  local action="$2"
+  local kind="$3"
+  local values
+  values="$(cn_collect_port_exception_values "${rules}" "${action}" "${kind}")" || return 1
+  [[ -n "${values}" ]] || return 0
+  if [[ "${kind}" == "asn" ]]; then
+    # shellcheck disable=SC2086
+    cn_collect_asn_cidrs ${values}
+  else
+    printf '%s\n' "${values}"
+  fi
+}
+
+cn_port_exception_set_name() {
+  local index="$1"
+  local action="$2"
+  local kind="$3"
+  local action_code kind_code
+  [[ "${action}" == "allow" ]] && action_code="a" || action_code="d"
+  [[ "${kind}" == "ip" ]] && kind_code="i" || kind_code="a"
+  printf '%s_e%s%s%s\n' "${CN_SET_NAME}" "${index}" "${kind_code}" "${action_code}"
+}
+
+cn_render_iptables_set_from_cidrs() {
+  local set_name="$1"
+  local cidrs="$2"
+  local cidr
+  [[ -n "${cidrs}" ]] || return 0
+  printf 'ipset create %s hash:net family inet -exist\n' "${set_name}"
+  printf 'ipset flush %s\n' "${set_name}"
+  while IFS= read -r cidr; do
+    [[ -n "${cidr}" ]] || continue
+    printf 'ipset add %s %s -exist\n' "${set_name}" "${cidr}"
+  done <<<"${cidrs}"
+}
+
+cn_render_iptables_global_ip_sets() {
+  local deny_ips allow_ips
+  deny_ips="$(cn_collect_global_ip_rule_values "${CN_GLOBAL_IP_RULES}" deny)" || return 1
+  allow_ips="$(cn_collect_global_ip_rule_values "${CN_GLOBAL_IP_RULES}" allow)" || return 1
+  cn_render_iptables_set_from_cidrs "${CN_SET_NAME}_gd" "${deny_ips}"
+  cn_render_iptables_set_from_cidrs "${CN_SET_NAME}_ga" "${allow_ips}"
+}
+
+cn_render_iptables_global_ip_rules() {
+  local deny_ips allow_ips
+  deny_ips="$(cn_collect_global_ip_rule_values "${CN_GLOBAL_IP_RULES}" deny)" || return 1
+  allow_ips="$(cn_collect_global_ip_rule_values "${CN_GLOBAL_IP_RULES}" allow)" || return 1
+  if [[ -n "${deny_ips}" ]]; then
+    printf 'iptables -A %s -m set --match-set %s_gd src -j REJECT\n' "${CN_CHAIN_NAME}" "${CN_SET_NAME}"
+  fi
+  if [[ -n "${allow_ips}" ]]; then
+    printf 'iptables -A %s -m set --match-set %s_ga src -j ACCEPT\n' "${CN_CHAIN_NAME}" "${CN_SET_NAME}"
+  fi
+}
+
+cn_render_iptables_port_exception_sets() {
+  local index="$1"
+  local _port_spec="$2"
+  local rules="$3"
+  local action kind cidrs set_name
+  for kind in ip asn; do
+    for action in deny allow; do
+      cidrs="$(cn_collect_port_exception_cidrs "${rules}" "${action}" "${kind}")" || return 1
+      [[ -n "${cidrs}" ]] || continue
+      set_name="$(cn_port_exception_set_name "${index}" "${action}" "${kind}")"
+      cn_render_iptables_set_from_cidrs "${set_name}" "${cidrs}"
+    done
+  done
+}
+
+cn_render_iptables_port_exception_match_rules() {
+  local chain="$1"
+  local port_match="$2"
+  local index="$3"
+  local rules="$4"
+  local action kind values set_name target protocol
+  for kind in ip asn; do
+    for action in deny allow; do
+      values="$(cn_collect_port_exception_values "${rules}" "${action}" "${kind}")" || return 1
+      [[ -n "${values}" ]] || continue
+      set_name="$(cn_port_exception_set_name "${index}" "${action}" "${kind}")"
+      [[ "${action}" == "deny" ]] && target="REJECT" || target="ACCEPT"
+      for protocol in tcp udp; do
+        printf 'iptables -A %s -p %s %s -m set --match-set %s src -j %s\n' "${chain}" "${protocol}" "${port_match}" "${set_name}" "${target}"
+      done
+    done
+  done
+}
+
+cn_render_iptables_port_exception_rules() {
+  local index="$1"
+  local port_spec="$2"
+  local rules="$3"
+  local iptables_port
+  iptables_port="$(cn_iptables_port_spec "${port_spec}")"
+  cn_render_iptables_port_exception_match_rules "${CN_CHAIN_NAME}" "-m conntrack --ctstate DNAT --ctorigdstport ${iptables_port}" "${index}" "${rules}"
+  cn_render_iptables_port_exception_match_rules "${CN_CHAIN_NAME}" "--dport ${iptables_port}" "${index}" "${rules}"
+}
+
+cn_render_nft_global_ip_sets() {
+  local deny_ips allow_ips
+  deny_ips="$(cn_collect_global_ip_rule_values "${CN_GLOBAL_IP_RULES}" deny)" || return 1
+  allow_ips="$(cn_collect_global_ip_rule_values "${CN_GLOBAL_IP_RULES}" allow)" || return 1
+  if [[ -n "${deny_ips}" ]]; then
+    cn_render_nft_ip_set_definition "global_ip_deny_v4" "${deny_ips}" "  "
+  fi
+  if [[ -n "${allow_ips}" ]]; then
+    cn_render_nft_ip_set_definition "global_ip_allow_v4" "${allow_ips}" "  "
+  fi
+}
+
+cn_render_nft_global_ip_rules() {
+  local deny_ips allow_ips
+  deny_ips="$(cn_collect_global_ip_rule_values "${CN_GLOBAL_IP_RULES}" deny)" || return 1
+  allow_ips="$(cn_collect_global_ip_rule_values "${CN_GLOBAL_IP_RULES}" allow)" || return 1
+  [[ -n "${deny_ips}" ]] && printf '    ip saddr @global_ip_deny_v4 reject\n'
+  [[ -n "${allow_ips}" ]] && printf '    ip saddr @global_ip_allow_v4 accept\n'
+  return 0
+}
+
+cn_render_nft_global_ip_forward_rules() {
+  local prefix="${CN_NFT_FORWARD_RULE_PREFIX:-}"
+  local deny_ips allow_ips
+  deny_ips="$(cn_collect_global_ip_rule_values "${CN_GLOBAL_IP_RULES}" deny)" || return 1
+  allow_ips="$(cn_collect_global_ip_rule_values "${CN_GLOBAL_IP_RULES}" allow)" || return 1
+  [[ -n "${deny_ips}" ]] && printf '    %sct status dnat ip saddr @global_ip_deny_v4 reject\n' "${prefix}"
+  [[ -n "${allow_ips}" ]] && printf '    %sct status dnat ip saddr @global_ip_allow_v4 accept\n' "${prefix}"
+  return 0
+}
+
+cn_nft_port_exception_set_name() {
+  local index="$1"
+  local action="$2"
+  local kind="$3"
+  printf 'port_exception_%s_%s_%s_v4\n' "${index}" "${kind}" "${action}"
+}
+
+cn_render_nft_port_exception_sets() {
+  local index="$1"
+  local _port_spec="$2"
+  local rules="$3"
+  local action kind cidrs set_name
+  for kind in ip asn; do
+    for action in deny allow; do
+      cidrs="$(cn_collect_port_exception_cidrs "${rules}" "${action}" "${kind}")" || return 1
+      [[ -n "${cidrs}" ]] || continue
+      cidrs="$(cn_normalize_ipv4_cidrs_for_nft <<<"${cidrs}")"
+      set_name="$(cn_nft_port_exception_set_name "${index}" "${action}" "${kind}")"
+      cn_render_nft_ip_set_definition "${set_name}" "${cidrs}" "  "
+    done
+  done
+}
+
+cn_render_nft_port_exception_input_rules() {
+  local index="$1"
+  local port_spec="$2"
+  local rules="$3"
+  local action kind values set_name verdict protocol
+  for kind in ip asn; do
+    for action in deny allow; do
+      values="$(cn_collect_port_exception_values "${rules}" "${action}" "${kind}")" || return 1
+      [[ -n "${values}" ]] || continue
+      set_name="$(cn_nft_port_exception_set_name "${index}" "${action}" "${kind}")"
+      [[ "${action}" == "deny" ]] && verdict="reject" || verdict="accept"
+      for protocol in tcp udp; do
+        printf '    %s dport %s ip saddr @%s %s\n' "${protocol}" "${port_spec}" "${set_name}" "${verdict}"
+      done
+    done
+  done
+}
+
+cn_render_nft_port_exception_forward_rules() {
+  local index="$1"
+  local port_spec="$2"
+  local rules="$3"
+  local prefix="${CN_NFT_FORWARD_RULE_PREFIX:-}"
+  local action kind values set_name verdict
+  for kind in ip asn; do
+    for action in deny allow; do
+      values="$(cn_collect_port_exception_values "${rules}" "${action}" "${kind}")" || return 1
+      [[ -n "${values}" ]] || continue
+      set_name="$(cn_nft_port_exception_set_name "${index}" "${action}" "${kind}")"
+      [[ "${action}" == "deny" ]] && verdict="reject" || verdict="accept"
+      printf '    %sct status dnat ct original proto-dst %s ip saddr @%s %s\n' "${prefix}" "${port_spec}" "${set_name}" "${verdict}"
+    done
+  done
+}
+
 cn_render_apply_commands() {
   local backend
   backend="$(cn_effective_firewall_backend)" || return 1
@@ -697,6 +1101,8 @@ cn_render_apply_commands_iptables() {
 
   cn_validate_forward_selection "${forward_mode}" "${forward_ifaces}" || return 1
   cn_validate_port_policies "${port_policies}" || return 1
+  cn_validate_global_ip_rules "${CN_GLOBAL_IP_RULES}" || return 1
+  cn_validate_port_exceptions "${CN_PORT_EXCEPTIONS}" || return 1
 
   local cidrs cidr
   cidrs="$(cn_collect_allowed_cidrs "${asns}" "$@")" || return 1
@@ -720,6 +1126,8 @@ cn_render_apply_commands_iptables() {
   fi
 
   cn_for_each_port_policy "${port_policies}" cn_render_iptables_port_policy_set
+  cn_render_iptables_global_ip_sets
+  cn_for_each_port_exception "${CN_PORT_EXCEPTIONS}" cn_render_iptables_port_exception_sets
 
   printf 'iptables -N %s 2>/dev/null || true\n' "${CN_CHAIN_NAME}"
   cn_remove_jump_command INPUT
@@ -737,9 +1145,11 @@ cn_render_apply_commands_iptables() {
       cn_add_jump_command FORWARD -m conntrack --ctstate DNAT
     fi
   fi
-  cn_for_each_port_policy "${port_policies}" cn_render_iptables_port_policy_rules
   printf 'iptables -A %s -i lo -j ACCEPT\n' "${CN_CHAIN_NAME}"
   printf 'iptables -A %s -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT\n' "${CN_CHAIN_NAME}"
+  cn_for_each_port_exception "${CN_PORT_EXCEPTIONS}" cn_render_iptables_port_exception_rules
+  cn_for_each_port_policy "${port_policies}" cn_render_iptables_port_policy_rules
+  cn_render_iptables_global_ip_rules
   printf 'iptables -A %s -m set --match-set %s src -j ACCEPT\n' "${CN_CHAIN_NAME}" "${CN_SET_NAME}"
   printf 'iptables -A %s -j REJECT\n' "${CN_CHAIN_NAME}"
 }
@@ -775,6 +1185,10 @@ cn_render_iptables_port_policy_rules() {
   local set_name="${CN_SET_NAME}_port_${index}"
   local iptables_port
   iptables_port="$(cn_iptables_port_spec "${port_spec}")"
+  printf 'iptables -A %s -p tcp -m conntrack --ctstate DNAT --ctorigdstport %s -m set --match-set %s src -j ACCEPT\n' "${CN_CHAIN_NAME}" "${iptables_port}" "${set_name}"
+  printf 'iptables -A %s -p udp -m conntrack --ctstate DNAT --ctorigdstport %s -m set --match-set %s src -j ACCEPT\n' "${CN_CHAIN_NAME}" "${iptables_port}" "${set_name}"
+  printf 'iptables -A %s -p tcp -m conntrack --ctstate DNAT --ctorigdstport %s -j REJECT\n' "${CN_CHAIN_NAME}" "${iptables_port}"
+  printf 'iptables -A %s -p udp -m conntrack --ctstate DNAT --ctorigdstport %s -j REJECT\n' "${CN_CHAIN_NAME}" "${iptables_port}"
   printf 'iptables -A %s -p tcp --dport %s -m set --match-set %s src -j ACCEPT\n' "${CN_CHAIN_NAME}" "${iptables_port}" "${set_name}"
   printf 'iptables -A %s -p udp --dport %s -m set --match-set %s src -j ACCEPT\n' "${CN_CHAIN_NAME}" "${iptables_port}" "${set_name}"
   printf 'iptables -A %s -p tcp --dport %s -j REJECT\n' "${CN_CHAIN_NAME}" "${iptables_port}"
@@ -791,6 +1205,8 @@ cn_render_apply_commands_nft() {
 
   cn_validate_forward_selection "${forward_mode}" "${forward_ifaces}" || return 1
   cn_validate_port_policies "${port_policies}" || return 1
+  cn_validate_global_ip_rules "${CN_GLOBAL_IP_RULES}" || return 1
+  cn_validate_port_exceptions "${CN_PORT_EXCEPTIONS}" || return 1
 
   local cidrs iface
   cidrs="$(cn_collect_allowed_cidrs "${asns}" "$@")" || return 1
@@ -821,12 +1237,16 @@ cn_render_apply_commands_nft() {
   printf 'table inet %s {\n' "${CN_NFT_TABLE}"
   cn_render_nft_ip_set_definition "${CN_NFT_SET_NAME}" "${cidrs}" "  "
   cn_for_each_port_policy "${port_policies}" cn_render_nft_port_policy_sets
+  cn_render_nft_global_ip_sets
+  cn_for_each_port_exception "${CN_PORT_EXCEPTIONS}" cn_render_nft_port_exception_sets
 
   printf '  chain input {\n'
   printf '    type filter hook input priority %s; policy accept;\n' "${CN_NFT_HOOK_PRIORITY}"
   printf '    iifname "lo" accept\n'
   printf '    ct state established,related accept\n'
+  cn_for_each_port_exception "${CN_PORT_EXCEPTIONS}" cn_render_nft_port_exception_input_rules
   cn_for_each_port_policy "${port_policies}" cn_render_nft_port_policy_input_rules
+  cn_render_nft_global_ip_rules
   printf '    ip saddr @%s accept\n' "${CN_NFT_SET_NAME}"
   printf '    meta nfproto ipv4 reject\n'
   printf '  }\n'
@@ -835,15 +1255,23 @@ cn_render_apply_commands_nft() {
     printf '  chain forward {\n'
     printf '    type filter hook forward priority %s; policy accept;\n' "${CN_NFT_HOOK_PRIORITY}"
     printf '    ct state established,related accept\n'
-    cn_for_each_port_policy "${port_policies}" cn_render_nft_port_policy_forward_rules
     if [[ "${forward_mode}" == "selected" ]]; then
       for iface in ${forward_ifaces}; do
+        CN_NFT_FORWARD_RULE_PREFIX="iifname \"${iface}\" " cn_for_each_port_exception "${CN_PORT_EXCEPTIONS}" cn_render_nft_port_exception_forward_rules
+        CN_NFT_FORWARD_RULE_PREFIX="iifname \"${iface}\" " cn_for_each_port_policy "${port_policies}" cn_render_nft_port_policy_forward_rules
+        CN_NFT_FORWARD_RULE_PREFIX="iifname \"${iface}\" " cn_render_nft_global_ip_forward_rules
         printf '    iifname "%s" ct status dnat ip saddr @%s accept\n' "${iface}" "${CN_NFT_SET_NAME}"
         printf '    iifname "%s" ct status dnat meta nfproto ipv4 reject\n' "${iface}"
+        CN_NFT_FORWARD_RULE_PREFIX="oifname \"${iface}\" " cn_for_each_port_exception "${CN_PORT_EXCEPTIONS}" cn_render_nft_port_exception_forward_rules
+        CN_NFT_FORWARD_RULE_PREFIX="oifname \"${iface}\" " cn_for_each_port_policy "${port_policies}" cn_render_nft_port_policy_forward_rules
+        CN_NFT_FORWARD_RULE_PREFIX="oifname \"${iface}\" " cn_render_nft_global_ip_forward_rules
         printf '    oifname "%s" ct status dnat ip saddr @%s accept\n' "${iface}" "${CN_NFT_SET_NAME}"
         printf '    oifname "%s" ct status dnat meta nfproto ipv4 reject\n' "${iface}"
       done
     else
+      cn_for_each_port_exception "${CN_PORT_EXCEPTIONS}" cn_render_nft_port_exception_forward_rules
+      cn_for_each_port_policy "${port_policies}" cn_render_nft_port_policy_forward_rules
+      cn_render_nft_global_ip_forward_rules
       printf '    ct status dnat ip saddr @%s accept\n' "${CN_NFT_SET_NAME}"
       printf '    ct status dnat meta nfproto ipv4 reject\n'
     fi
@@ -882,8 +1310,9 @@ cn_render_nft_port_policy_forward_rules() {
   local index="$1"
   local _port_spec="$2"
   local _selectors="$3"
-  printf '    ct status dnat ct original proto-dst @port_policy_%s_ports ip saddr @port_policy_%s_v4 accept\n' "${index}" "${index}"
-  printf '    ct status dnat ct original proto-dst @port_policy_%s_ports meta nfproto ipv4 reject\n' "${index}"
+  local prefix="${CN_NFT_FORWARD_RULE_PREFIX:-}"
+  printf '    %sct status dnat ct original proto-dst @port_policy_%s_ports ip saddr @port_policy_%s_v4 accept\n' "${prefix}" "${index}" "${index}"
+  printf '    %sct status dnat ct original proto-dst @port_policy_%s_ports meta nfproto ipv4 reject\n' "${prefix}" "${index}"
 }
 
 cn_render_clear_commands() {
@@ -898,7 +1327,8 @@ cn_render_clear_commands() {
       cn_remove_jump_command FORWARD
       printf 'iptables -F %s 2>/dev/null || true\n' "${CN_CHAIN_NAME}"
       printf 'iptables -X %s 2>/dev/null || true\n' "${CN_CHAIN_NAME}"
-      printf 'ipset destroy %s 2>/dev/null || true\n' "${CN_SET_NAME}"
+      # shellcheck disable=SC2016
+      printf 'ipset list -name 2>/dev/null | awk '\''$0 == "%s" || $0 ~ /^%s_(port_[0-9]+|g[ad]|e[0-9]+(ia|id|aa|ad))$/ { print "ipset destroy " $0 " 2>/dev/null || true" }'\'' | sh\n' "${CN_SET_NAME}" "${CN_SET_NAME}"
       ;;
   esac
 }
@@ -912,7 +1342,8 @@ cn_render_best_effort_clear_commands() {
   printf 'iptables -X %s 2>/dev/null || true\n' "${CN_CHAIN_NAME}"
   printf 'fi\n'
   printf 'if command -v ipset >/dev/null 2>&1; then\n'
-  printf 'ipset list -name 2>/dev/null | awk '\''$0 == "%s" || $0 ~ /^%s_port_[0-9]+$/ { print "ipset destroy " $0 " 2>/dev/null || true" }'\'' | sh\n' "${CN_SET_NAME}" "${CN_SET_NAME}"
+  # shellcheck disable=SC2016
+  printf 'ipset list -name 2>/dev/null | awk '\''$0 == "%s" || $0 ~ /^%s_(port_[0-9]+|g[ad]|e[0-9]+(ia|id|aa|ad))$/ { print "ipset destroy " $0 " 2>/dev/null || true" }'\'' | sh\n' "${CN_SET_NAME}" "${CN_SET_NAME}"
   printf 'fi\n'
 }
 
@@ -936,6 +1367,8 @@ cn_save_config() {
       ;;
   esac
   cn_validate_port_policies "${port_policies}" || return 1
+  cn_validate_global_ip_rules "${CN_GLOBAL_IP_RULES}" || return 1
+  cn_validate_port_exceptions "${CN_PORT_EXCEPTIONS}" || return 1
 
   mkdir -p "$(dirname "${CN_CONFIG_FILE}")"
   {
@@ -943,6 +1376,8 @@ cn_save_config() {
     printf 'CN_CODES="%s"\n' "${codes[*]}"
     printf 'CN_ASNS="%s"\n' "${asns}"
     printf 'CN_PORT_POLICIES=%q\n' "${port_policies}"
+    printf 'CN_GLOBAL_IP_RULES=%q\n' "${CN_GLOBAL_IP_RULES}"
+    printf 'CN_PORT_EXCEPTIONS=%q\n' "${CN_PORT_EXCEPTIONS}"
     printf 'CN_FORWARD_MODE="%s"\n' "${forward_mode}"
     printf 'CN_FORWARD_IFACES="%s"\n' "${forward_ifaces}"
     printf 'CN_FIREWALL_BACKEND="%s"\n' "$(cn_effective_firewall_backend)"
@@ -976,6 +1411,10 @@ cn_load_config_codes() {
       printf 'CN\n'
       continue
     fi
+    if cn_is_home_broadband_selector "${code}"; then
+      printf 'HOME\n'
+      continue
+    fi
     if ! [[ "${code}" =~ ^[0-9]{6}$ ]]; then
       echo "配置文件中存在非法全局白名单代码：${code}" >&2
       return 1
@@ -1001,6 +1440,18 @@ cn_load_config_asns() {
 cn_load_config_port_policies() {
   cn_source_config
   printf '%s\n' "${CN_PORT_POLICIES:-}"
+}
+
+cn_load_config_global_ip_rules() {
+  cn_source_config
+  cn_validate_global_ip_rules "${CN_GLOBAL_IP_RULES:-}" || return 1
+  printf '%s\n' "${CN_GLOBAL_IP_RULES:-}"
+}
+
+cn_load_config_port_exceptions() {
+  cn_source_config
+  cn_validate_port_exceptions "${CN_PORT_EXCEPTIONS:-}" || return 1
+  printf '%s\n' "${CN_PORT_EXCEPTIONS:-}"
 }
 
 cn_load_config_forward_ifaces() {
@@ -1060,6 +1511,8 @@ cn_show_persistence_status() {
     echo "regions: ${CN_CODES:-未配置}"
     echo "asns: ${CN_ASNS:-未配置}"
     echo "port policies: ${CN_PORT_POLICIES:-未配置}"
+    echo "global IP rules: ${CN_GLOBAL_IP_RULES:-未配置}"
+    echo "port IP/ASN exceptions: ${CN_PORT_EXCEPTIONS:-未配置}"
     echo "backend: ${CN_FIREWALL_BACKEND:-auto}"
     echo "forward: ${CN_FORWARD_MODE:-all}${CN_FORWARD_IFACES:+ (${CN_FORWARD_IFACES})}"
   else

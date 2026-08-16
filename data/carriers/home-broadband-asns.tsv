@@ -1,0 +1,47 @@
+# Conservative public-access ASN list for the three mainland China carriers.
+# Format: ASN<TAB>carrier<TAB>registered network name / rationale
+#
+# This is an ASN-level approximation. An ASN can contain both residential and
+# non-residential subscribers, so it cannot prove that an individual IP is a
+# home broadband line. Separately originated IDC, cloud, IoT, 5G-only,
+# industrial Internet and premium international networks are intentionally not
+# included. In particular, AS4809 (CN2), AS9929 (CUII) and AS58453 (CMI) are
+# excluded.
+#
+# Selection evidence and maintenance policy are documented in README.md.
+# Refresh the prefix bundle with
+# tools/prepare_home_broadband_data.sh.
+AS4134	telecom	CHINANET-BACKBONE
+AS4812	telecom	CHINANET-SH-AP
+AS134762	telecom	CHINANET-LIAONING-DALIAN-MAN
+AS17638	telecom	CHINATELECOM-TJ-AS-AP
+AS136199	telecom	ChinaNet-Guangdong-Yuedong-MAN
+AS134774	telecom	ChinaNet-Guangdong-Shenzhen-MAN
+AS141739	telecom	CT-CHONGQING-MAN2-AP
+AS137688	telecom	CHINATELECOM-Liaoning-Benxi-MAN
+AS140061	telecom	CHINANET-Qinghai-AS-AP
+AS134419	telecom	CHINATELECOM-Guangxi-Beihai-MAN
+AS17897	telecom	CHINATELECOM-HLJ-AS-AP
+AS4837	unicom	CHINA169-Backbone
+AS4808	unicom	CHINA169-BJ
+AS17621	unicom	CNCGROUP-SH
+AS17816	unicom	CHINA169-GZ
+AS17623	unicom	CNCGROUP-SZ
+AS17622	unicom	CNCGROUP-GZ
+AS140726	unicom	UNICOM-HEFEI-MAN
+AS9808	mobile	CHINAMOBILE-CN
+AS56046	mobile	CMNET-Jiangsu-AP
+AS56041	mobile	CMNET-Zhejiang-AP
+AS24400	mobile	CMNET-V4shanghai-AS-AP
+AS56048	mobile	CMNET-BEIJING-AP
+AS24444	mobile	CMNET-V4shandong-AS-AP
+AS24445	mobile	CMNET-V4henan-AS-AP
+AS56044	mobile	CMNET-AS-Liaoning
+AS56045	mobile	CMNET-Jiangxi-AP
+AS24547	mobile	CMNET-V4HEBEI-AS-AP
+AS56040	mobile	CMNET-GuangDong-AP
+AS56047	mobile	CMNET-Hunan-AP
+AS132525	mobile	CMNET-HEILONGJIANG-CN
+AS38019	mobile	CMNET-V4TIANJIN-AS-AP
+AS56042	mobile	CMNET-Shanxi-AP
+AS134810	mobile	CMNET-JILIN-AS-AP
