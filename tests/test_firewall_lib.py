@@ -394,6 +394,28 @@ class FirewallLibTests(unittest.TestCase):
             result.stdout.index("ip saddr @allowed_v4 accept"),
         )
 
+    def test_global_ip_interaction_chooses_action_before_ip(self):
+        script = (
+            f"CN_READ_FROM_STDIN=1 CN_VISUAL_MENU=0 source {INSTALL_SH}; "
+            "interactive_select_global_ip_rules; "
+            "printf '%s\\n' \"${SELECTED_GLOBAL_IP_RULES}\""
+        )
+        result = subprocess.run(
+            ["bash", "-c", script],
+            input="1\n210.51.42.156\n2\n198.51.100.9\n3\n",
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.stdout.strip(),
+            "allow:210.51.42.156,deny:198.51.100.9",
+        )
+        self.assertIn("请输入要允许的单个 IPv4", result.stderr)
+        self.assertIn("请输入要屏蔽的单个 IPv4", result.stderr)
+
     def test_port_ip_and_asn_exceptions_are_highest_priority_for_tcp_udp_and_dnat(self):
         result = run_firewall_lib(
             "CN_FIREWALL_BACKEND=nft "

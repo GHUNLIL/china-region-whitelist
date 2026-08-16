@@ -388,13 +388,87 @@ interactive_select_asns() {
 }
 
 interactive_select_global_ip_rules() {
-  local rules_input
-  echo >&2
-  echo "可选：全局单 IP 允许/屏蔽。deny 优先于全局白名单，allow 可放行不在全局白名单内的单 IP。" >&2
-  echo "格式：allow:1.2.3.4,deny:5.6.7.8；也可简写为 +1.2.3.4,-5.6.7.8。" >&2
-  rules_input="$(read_from_tty "全局单 IP 规则（可空）: ")"
-  cn_validate_global_ip_rules "${rules_input}"
-  SELECTED_GLOBAL_IP_RULES="${rules_input}"
+  local action_input action target candidate combined done_label
+  local -a rules
+  rules=()
+  SELECTED_GLOBAL_IP_RULES=""
+
+  while true; do
+    if ((${#rules[@]} == 0)); then
+      done_label="完成，不配置全局单 IP"
+    else
+      done_label="完成，使用已添加的 ${#rules[@]} 条规则"
+    fi
+
+    if visual_menu_available; then
+      visual_single_select \
+        "全局单 IP 允许/屏蔽" \
+        "允许一个 IP" "allow" \
+        "屏蔽一个 IP" "deny" \
+        "手动输入完整规则" "manual" \
+        "${done_label}" "done"
+      action_input="${VISUAL_SELECTED_VALUE}"
+    else
+      echo >&2
+      echo "全局单 IP 规则（当前已添加 ${#rules[@]} 条）：" >&2
+      echo "  1) 允许一个 IP" >&2
+      echo "  2) 屏蔽一个 IP" >&2
+      echo "  3) 完成" >&2
+      echo "  4) 手动输入完整规则" >&2
+      action_input="$(read_from_tty "请选择 [1-4]: ")"
+      case "$(cn_trim "${action_input}")" in
+        1|allow|ALLOW|允许|放行) action_input="allow" ;;
+        2|deny|DENY|屏蔽|拒绝|禁止) action_input="deny" ;;
+        3|done|DONE|完成|"") action_input="done" ;;
+        4|manual|MANUAL|手动) action_input="manual" ;;
+        *)
+          echo "无效选择，请输入 1、2、3 或 4。" >&2
+          continue
+          ;;
+      esac
+    fi
+
+    case "${action_input}" in
+      allow|deny)
+        action="${action_input}"
+        if [[ "${action}" == "allow" ]]; then
+          target="$(read_from_tty "请输入要允许的单个 IPv4: ")"
+        else
+          target="$(read_from_tty "请输入要屏蔽的单个 IPv4: ")"
+        fi
+        target="$(cn_trim "${target}")"
+        if [[ -z "${target}" ]]; then
+          echo "未输入 IP，未添加规则。" >&2
+          continue
+        fi
+        candidate="${action}:${target}"
+        if ((${#rules[@]} > 0)); then
+          combined="$(join_by_comma "${rules[@]}")","${candidate}"
+        else
+          combined="${candidate}"
+        fi
+        if ! cn_validate_global_ip_rules "${combined}"; then
+          echo "IP 规则无效，未添加：${candidate}" >&2
+          continue
+        fi
+        rules+=("${candidate}")
+        printf '已添加：%s\n' "${candidate}" >&2
+        ;;
+      manual)
+        echo "格式：allow:1.2.3.4,deny:5.6.7.8；也支持 +1.2.3.4,-5.6.7.8。" >&2
+        combined="$(read_from_tty "完整全局单 IP 规则（可空）: ")"
+        cn_validate_global_ip_rules "${combined}"
+        SELECTED_GLOBAL_IP_RULES="${combined}"
+        return 0
+        ;;
+      done)
+        if ((${#rules[@]} > 0)); then
+          SELECTED_GLOBAL_IP_RULES="$(join_by_comma "${rules[@]}")"
+        fi
+        return 0
+        ;;
+    esac
+  done
 }
 
 interactive_select_port_exceptions() {
@@ -1306,4 +1380,6 @@ main() {
   esac
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi
