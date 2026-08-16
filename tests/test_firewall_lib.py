@@ -2,6 +2,8 @@ import subprocess
 import sys
 import unittest
 import importlib.util
+import ipaddress
+import tempfile
 from pathlib import Path
 
 
@@ -42,6 +44,8 @@ def run_firewall_lib(command: str) -> subprocess.CompletedProcess[str]:
         f"CN_COUNTRY_FILE={FIXTURES / 'country' / 'CN.txt'}; "
         f"CN_BUNDLED_ASN_DIR={FIXTURES / 'asn'}; "
         f"CN_ASN_CACHE_DIR={FIXTURES / 'asn'}; "
+        f"CN_HOME_BROADBAND_FILE={FIXTURES / 'carriers' / 'home-broadband.txt'}; "
+        f"CN_HOME_BROADBAND_ASNS_FILE={FIXTURES / 'carriers' / 'home-broadband-asns.tsv'}; "
         f"{command}"
     )
     return subprocess.run(["bash", "-c", script], text=True, capture_output=True, check=False)
@@ -242,7 +246,8 @@ class FirewallLibTests(unittest.TestCase):
         self.assertIn("新增端口白名单", script)
         self.assertIn("修改端口白名单", script)
         self.assertIn("删除端口白名单", script)
-        self.assertIn("端口白名单优先于全局白名单生效", script)
+        self.assertIn("端口+单 IP > 端口+ASN > 端口白名单 > 全局单 IP > 全局白名单", script)
+        self.assertIn("所有端口规则同时支持 TCP、UDP", script)
         self.assertIn("上/下键移动，空格勾选，回车确认", script)
         self.assertIn("清理已应用规则和开机配置", script)
         self.assertIn("confirm_clear_rules_visual", script)
@@ -264,10 +269,12 @@ class FirewallLibTests(unittest.TestCase):
         self.assertIn("CN_FORWARD_IFACES", script)
         self.assertIn("CN_ASNS", script)
         self.assertIn("CN_PORT_POLICIES", script)
+        self.assertIn("CN_GLOBAL_IP_RULES", script)
+        self.assertIn("CN_PORT_EXCEPTIONS", script)
         self.assertIn("CN_FIREWALL_BACKEND", script)
         self.assertIn("cn_render_best_effort_clear_commands", script)
         self.assertIn("systemctl stop", script)
-        self.assertIn("^%s_port_[0-9]+$", script)
+        self.assertIn("port_[0-9]+|g[ad]|e[0-9]+", script)
 
     def test_firewall_lib_renders_nft_rules_without_touching_flvx_table(self):
         result = run_firewall_lib(
@@ -358,6 +365,161 @@ class FirewallLibTests(unittest.TestCase):
         self.assertIn("set port_policy_1_v4 {", result.stdout)
         self.assertIn("203.0.113.0/24", result.stdout)
         self.assertNotIn("203.0.113.7/32", result.stdout)
+
+    def test_home_broadband_selector_uses_bundled_carrier_prefixes(self):
+        result = run_firewall_lib(
+            "CN_FIREWALL_BACKEND=nft cn_render_apply_commands '' all '' '' '' HOME"
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("100.64.0.0/10", result.stdout)
+        self.assertNotIn("10.0.0.0/8", result.stdout)
+
+    def test_global_single_ip_allow_and_deny_apply_to_input_and_forward(self):
+        result = run_firewall_lib(
+            "CN_FIREWALL_BACKEND=nft "
+            "CN_GLOBAL_IP_RULES='allow:198.51.100.8,deny:198.51.100.9' "
+            "cn_render_apply_commands '' all '' '' '' 990000"
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("set global_ip_deny_v4 {", result.stdout)
+        self.assertIn("set global_ip_allow_v4 {", result.stdout)
+        self.assertIn("ip saddr @global_ip_deny_v4 reject", result.stdout)
+        self.assertIn("ip saddr @global_ip_allow_v4 accept", result.stdout)
+        self.assertIn("ct status dnat ip saddr @global_ip_deny_v4 reject", result.stdout)
+        self.assertIn("ct status dnat ip saddr @global_ip_allow_v4 accept", result.stdout)
+        self.assertLess(
+            result.stdout.index("ip saddr @global_ip_deny_v4 reject"),
+            result.stdout.index("ip saddr @allowed_v4 accept"),
+        )
+
+    def test_port_ip_and_asn_exceptions_are_highest_priority_for_tcp_udp_and_dnat(self):
+        result = run_firewall_lib(
+            "CN_FIREWALL_BACKEND=nft "
+            "CN_PORT_EXCEPTIONS='22=allow:198.51.100.8,deny:198.51.100.9,allow:AS64500,deny:AS64501' "
+            "cn_render_apply_commands '' all '' '' '22=测试省' 990000"
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("tcp dport 22 ip saddr @port_exception_1_ip_deny_v4 reject", result.stdout)
+        self.assertIn("udp dport 22 ip saddr @port_exception_1_ip_allow_v4 accept", result.stdout)
+        self.assertIn("tcp dport 22 ip saddr @port_exception_1_asn_deny_v4 reject", result.stdout)
+        self.assertIn("udp dport 22 ip saddr @port_exception_1_asn_allow_v4 accept", result.stdout)
+        self.assertIn(
+            "ct status dnat ct original proto-dst 22 ip saddr @port_exception_1_ip_deny_v4 reject",
+            result.stdout,
+        )
+        self.assertLess(
+            result.stdout.index("tcp dport 22 ip saddr @port_exception_1_ip_allow_v4 accept"),
+            result.stdout.index("tcp dport 22 ip saddr @port_exception_1_asn_deny_v4 reject"),
+        )
+        self.assertLess(
+            result.stdout.index("tcp dport 22 ip saddr @port_exception_1_asn_allow_v4 accept"),
+            result.stdout.index("tcp dport @port_policy_1_ports ip saddr @port_policy_1_v4 accept"),
+        )
+
+    def test_iptables_port_exceptions_cover_tcp_udp_and_original_dnat_port(self):
+        result = run_firewall_lib(
+            "CN_FIREWALL_BACKEND=iptables "
+            "CN_PORT_EXCEPTIONS='53=allow:198.51.100.8,deny:AS64501' "
+            "cn_render_apply_commands '' all '' '' '' 990000"
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("-p tcp --dport 53 -m set --match-set cn_region_whitelist_e1ia src -j ACCEPT", result.stdout)
+        self.assertIn("-p udp --dport 53 -m set --match-set cn_region_whitelist_e1ia src -j ACCEPT", result.stdout)
+        self.assertIn(
+            "-p udp -m conntrack --ctstate DNAT --ctorigdstport 53 "
+            "-m set --match-set cn_region_whitelist_e1ad src -j REJECT",
+            result.stdout,
+        )
+
+    def test_port_exception_conflicts_and_duplicate_ports_are_rejected(self):
+        conflict = run_firewall_lib(
+            "cn_validate_port_exceptions '22=allow:1.2.3.4,deny:1.2.3.4'"
+        )
+        duplicate = run_firewall_lib(
+            "cn_validate_port_exceptions '22=allow:1.2.3.4;22=deny:AS64500'"
+        )
+
+        self.assertNotEqual(conflict.returncode, 0)
+        self.assertIn("同时配置了允许和屏蔽", conflict.stderr)
+        self.assertNotEqual(duplicate.returncode, 0)
+        self.assertIn("同一端口只能出现一条例外配置", duplicate.stderr)
+
+    def test_global_ip_conflicts_and_cidrs_are_rejected(self):
+        conflict = run_firewall_lib(
+            "cn_validate_global_ip_rules 'allow:1.2.3.4,deny:1.2.3.4'"
+        )
+        cidr = run_firewall_lib(
+            "cn_validate_global_ip_rules 'allow:1.2.3.0/24'"
+        )
+
+        self.assertNotEqual(conflict.returncode, 0)
+        self.assertIn("同时配置了允许和屏蔽", conflict.stderr)
+        self.assertNotEqual(cidr.returncode, 0)
+        self.assertIn("只支持单个 IPv4 或 ASN", cidr.stderr)
+
+    def test_selected_forward_mode_scopes_port_exceptions_to_selected_interface(self):
+        result = run_firewall_lib(
+            "CN_FIREWALL_BACKEND=nft "
+            "CN_PORT_EXCEPTIONS='22=deny:198.51.100.9' "
+            "cn_render_apply_commands '' selected tun0 '' '' 990000"
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            'iifname "tun0" ct status dnat ct original proto-dst 22 '
+            "ip saddr @port_exception_1_ip_deny_v4 reject",
+            result.stdout,
+        )
+        self.assertIn(
+            'oifname "tun0" ct status dnat ct original proto-dst 22 '
+            "ip saddr @port_exception_1_ip_deny_v4 reject",
+            result.stdout,
+        )
+
+    def test_real_home_broadband_bundle_is_valid_and_excludes_premium_asns(self):
+        asn_list = (ROOT / "data" / "carriers" / "home-broadband-asns.tsv").read_text(encoding="utf-8")
+        prefixes = [
+            line.strip()
+            for line in (ROOT / "data" / "carriers" / "home-broadband.txt").read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.startswith("#")
+        ]
+
+        self.assertIn("AS4134\ttelecom", asn_list)
+        self.assertIn("AS4837\tunicom", asn_list)
+        self.assertIn("AS9808\tmobile", asn_list)
+        for excluded_asn in ("AS4809\t", "AS9929\t", "AS58453\t"):
+            self.assertNotIn(excluded_asn, asn_list)
+        self.assertGreater(len(prefixes), 1000)
+        for prefix in prefixes:
+            self.assertIsInstance(ipaddress.ip_network(prefix), ipaddress.IPv4Network)
+
+    def test_new_ip_and_port_exception_rules_are_saved_and_loaded(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_file = Path(temp_dir) / "china-region-whitelist.conf"
+            result = run_firewall_lib(
+                "cn_require_root() { return 0; }; "
+                f"CN_CONFIG_FILE={config_file}; "
+                "CN_FIREWALL_BACKEND=nft; "
+                "CN_GLOBAL_IP_RULES='allow:1.2.3.4,deny:5.6.7.8'; "
+                "CN_PORT_EXCEPTIONS='22=allow:1.2.3.4,deny:AS64501'; "
+                "cn_save_config all '' '' '' HOME; "
+                "CN_GLOBAL_IP_RULES=''; CN_PORT_EXCEPTIONS=''; "
+                "cn_source_config; "
+                "printf '%s\n%s\n' \"${CN_GLOBAL_IP_RULES}\" \"${CN_PORT_EXCEPTIONS}\""
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.stdout.splitlines(),
+            [
+                "allow:1.2.3.4,deny:5.6.7.8",
+                "22=allow:1.2.3.4,deny:AS64501",
+            ],
+        )
 
     def test_default_downloads_use_github_proxy(self):
         firewall_lib = FIREWALL_LIB.read_text(encoding="utf-8")

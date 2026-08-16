@@ -1,6 +1,8 @@
 # 中国大陆 IP 白名单一键脚本
 
-这个项目用于在普通中国大陆服务器上按国家/省级 IP 段限制入站访问：只有交互选择的中国大陆 `CN`、省/自治区/直辖市、当前 SSH 客户端 IP、以及可选的 ASN 白名单可以访问服务器，其他来源访问入站端口会被拒绝。脚本不管理 `OUTPUT` 出站流量，服务器向外连接不受限制；默认只托管本机 `INPUT` 和 DNAT/端口转发类入站 `FORWARD` 流量，因此本机服务和 flvx 这类 nftables 端口转发会走同一套整机白名单。
+这个项目用于在普通中国大陆服务器上按国家/省级 IP 段限制入站访问：只有交互选择的中国大陆 `CN`、省/自治区/直辖市、三大运营商公众接入网（近似普通家宽）、当前 SSH 客户端 IP，以及可选的 ASN/IP 白名单可以访问服务器，其他来源访问入站端口会被拒绝。脚本支持全局单 IP 允许/屏蔽、端口白名单和最高优先级的“单端口+单 IP/ASN”允许/屏蔽。所有端口规则同时覆盖 TCP、UDP 和 DNAT 原始目标端口。
+
+脚本不管理 `OUTPUT` 出站流量，服务器向外连接不受限制；默认只托管本机 `INPUT` 和 DNAT/端口转发类入站 `FORWARD` 流量，因此本机服务和 flvx 这类 nftables 端口转发会走同一套整机白名单。
 
 仓库会通过 GitHub Actions 每小时同步一次上游 CIDR 数据，并把 APNIC 国家级 `CN` IPv4、省份索引和省级 CIDR 文件一起打进仓库。服务器运行 `apply` 或 `dry-run` 时默认直接使用随包数据，不需要安装 Python。
 
@@ -15,8 +17,11 @@
 - `data/country/CN.txt`：APNIC 国家级中国大陆 IPv4 段，用于“全国/CN”
 - `data/regions/*.txt`：本地省级 CIDR 段
 - `data/asn/*.txt`：可选的预制 ASN IPv4 段，例如 `AS16509`
+- `data/carriers/home-broadband-asns.tsv`：保守筛选的电信、联通、移动公众接入网 ASN 清单
+- `data/carriers/home-broadband.txt`：由上述 ASN 生成的离线 IPv4 前缀包
 - `tools/region_tool.py`：开发/测试用的本地数据解析工具
 - `tools/firewall_lib.sh`：防火墙辅助函数
+- `tools/prepare_home_broadband_data.sh`：刷新三大运营商公众接入网前缀包
 - `tests/fixtures/asn/`：测试用 ASN 前缀夹具
 - `tests/`：不触碰真实防火墙的本地测试
 
@@ -54,16 +59,35 @@ sudo bash install.sh apply
 
 脚本默认进入键盘配置主界面：上/下键移动，空格勾选或取消，回车确认。如果已经保存过配置，主界面会先载入 `/etc/china-region-whitelist.conf` 作为当前草案，并提供这些操作：
 
-- 编辑全局白名单：勾选 `全国（中国大陆 CN）`，或按省/自治区/直辖市逐个勾选
+- 编辑全局白名单：勾选 `全国（中国大陆 CN）`、`三大运营商公众接入网（近似普通家宽）`，或按省/自治区/直辖市逐个勾选
 - 编辑全局 ASN 白名单：适合加入国外管理服务器所在云厂商 ASN，例如 `AS16509 AS14061`
+- 编辑全局单 IP 允许/屏蔽：例如 `allow:1.2.3.4,deny:5.6.7.8`
 - 新增端口白名单：输入单端口或端口范围，再勾选这个端口允许的省份，也可以补充 ASN/IP/CIDR
 - 修改端口白名单：选择已有端口策略后重新编辑
 - 删除端口白名单：选择已有端口策略后删除
 - 手动编辑全部端口白名单：直接输入完整规则文本
+- 编辑端口 IP/ASN 例外：例如 `22=allow:1.2.3.4,deny:AS4809`，这是最高优先级
 - 同步最新预制 IP 数据：从 GitHub 拉取仓库已预制好的 `data/` 到 `/var/lib/china-region-whitelist/data`，包含全国、省份和预制 ASN，不需要 Python
 - 清理已应用规则和开机配置：删除本脚本创建的防火墙规则、保存配置和 systemd 开机恢复
 
-端口白名单优先级高于整机默认全局白名单：如果某个端口命中了端口策略，来源必须匹配该端口自己的白名单，否则即使来源在全局白名单里也会被拒绝。`全国` / `中国` / `CN` 会使用国家级 `data/country/CN.txt`，不会再展开成所有省份 CIDR；只有单端口选择具体省份时才读取省级 CIDR 文件。
+规则优先级从高到低如下：
+
+1. 单端口+单 IP 允许/屏蔽；同一单 IP 不允许同时配置相反动作。
+2. 单端口+ASN 允许/屏蔽；若同一来源同时命中端口 IP 与端口 ASN，以更具体的单 IP 为准。
+3. 端口白名单；命中端口策略后必须匹配该端口自己的白名单，否则拒绝。
+4. 全局单 IP 允许/屏蔽。
+5. 全局地区、家宽和 ASN 白名单。
+6. 未命中则拒绝。
+
+同一优先级若不同 ASN 前缀重叠，屏蔽先于允许。已经建立的连接仍由 `ESTABLISHED,RELATED` 保护；新连接按上述优先级判断。
+
+`全国` / `中国` / `CN` 会使用国家级 `data/country/CN.txt`，不会再展开成所有省份 CIDR；只有选择具体省份时才读取省级 CIDR 文件。
+
+## 三大运营商普通家宽模式
+
+在全局白名单或端口白名单中选择 `三大运营商公众接入网（近似普通家宽）`，手动格式可写 `HOME`、`家庭宽带` 或 `普通家宽`。该模式使用 `data/carriers/home-broadband-asns.tsv` 中保守筛选的电信、联通、移动公众接入网 ASN，并明确不包含独立的 IDC、云、IoT、5G-only、工业互联网和国际精品网 ASN；例如不包含电信 CN2 `AS4809`、联通 CUII `AS9929` 和移动国际 `AS58453`。
+
+重要限制：ASN 只能判断 IP 前缀由哪个自治系统宣告，无法证明某个具体 IP 一定是住宅用户。同一个公众接入 ASN 仍可能混有政企或机房地址。若必须做到商业数据库级别的“住宅代理/机房 IP”识别，需要另接带 usage-type 的实时 IP 情报源；本项目当前提供的是可审计、可离线运行的 ASN 级近似。
 
 端口策略也支持高级手动输入完整格式：
 
@@ -74,9 +98,26 @@ sudo bash install.sh apply
 白名单项可写：
 
 - `全国` / `中国` / `CN`
+- `HOME` / `家庭宽带` / `普通家宽`
 - 省份或直辖市，例如 `上海市`、`广东省`
 - ASN，例如 `AS16509`
 - IPv4 或 IPv4 CIDR，例如 `1.2.3.4`、`1.2.3.0/24`
+
+全局单 IP 规则只接受单个 IPv4，不接受 CIDR：
+
+```text
+allow:1.2.3.4,deny:5.6.7.8
+```
+
+也可简写为 `+1.2.3.4,-5.6.7.8`。
+
+端口 IP/ASN 例外只接受单端口，以及单个 IPv4 或 ASN：
+
+```text
+22=allow:1.2.3.4,deny:AS4809;443=allow:AS4134,deny:5.6.7.8
+```
+
+每个端口只写一次，并把该端口的所有例外合并在同一条中。这些规则同时生成 TCP、UDP 规则；对 DNAT/端口转发会匹配连接的原始目标端口。
 
 如果当前环境没有可用 TTY，脚本会自动退回文本输入模式。也可以设置 `CN_VISUAL_MENU=0` 关闭键盘菜单。
 
@@ -145,7 +186,7 @@ bash -n install.sh tools/firewall_lib.sh
 
 `apply` 会拒绝所有未命中白名单的入站流量，包括 SSH。脚本会检测当前 SSH 客户端 IP，并询问是否加入本次白名单，建议保留默认 `Y`。
 
-国家级 `CN` IPv4 数据来自 APNIC delegated stats，省级 CIDR 数据来自 `metowolf/iplist`，这些数据由 GitHub Actions 生成后预制进仓库。服务器默认不会直接访问 APNIC/metowolf，也不需要 Python。已预制的 ASN 会优先从 `data/asn/` 读取；未预制的 ASN 才会从 `ipverse/as-ip-blocks` 拉取，默认同样会走 `https://gh-proxy.com/`。若服务器缺少 `nftables`、`iptables` 或 `ipset`，脚本会尝试使用系统默认软件源安装依赖；这一步可能访问发行版软件源。
+国家级 `CN` IPv4 数据来自 APNIC delegated stats，省级 CIDR 数据来自 `metowolf/iplist`，家宽 ASN 登记和用户规模参考 APNIC/APNIC Labs，ASN 前缀来自 `ipverse/as-ip-blocks`。这些数据由 GitHub Actions 生成后预制进仓库，服务器默认不需要 Python。已预制的 ASN 会优先从 `data/asn/` 读取；未预制的 ASN 才会从 `ipverse/as-ip-blocks` 拉取，默认同样会走 `https://gh-proxy.com/`。若服务器缺少 `nftables`、`iptables` 或 `ipset`，脚本会尝试使用系统默认软件源安装依赖；这一步可能访问发行版软件源。
 
 默认 GitHub 访问会经过 `https://gh-proxy.com/`。如果需要换代理或直连：
 
@@ -166,6 +207,7 @@ sudo CN_ASN_BASE_URL=https://your-mirror.example/as-ip-blocks/as bash /opt/china
 
 ```bash
 python tools/prepare_data.py --refresh-index --force --ipdb /path/to/ipipfree.ipdb
+bash tools/prepare_home_broadband_data.sh
 ```
 
 然后把整个目录复制到服务器即可。
