@@ -1272,8 +1272,25 @@ ${summary}
   is_yes_confirmation "${confirm}"
 }
 
+normalize_confirmation_input() {
+  local value="${1:-}"
+  local sequence
+  # SSH terminals can leave cursor-key bytes in the input queue, while pasted
+  # text may be wrapped in bracketed-paste markers. They are invisible on
+  # screen but would otherwise turn a visible "y" into a rejected value.
+  for sequence in \
+    $'\x1b[A' $'\x1b[B' $'\x1b[C' $'\x1b[D' \
+    $'\x1bOA' $'\x1bOB' $'\x1bOC' $'\x1bOD' \
+    $'\x1b[H' $'\x1b[F' $'\x1bOH' $'\x1bOF' \
+    $'\x1b[200~' $'\x1b[201~'; do
+    value="${value//"${sequence}"/}"
+  done
+  value="${value//$'\r'/}"
+  cn_trim "${value}"
+}
+
 is_yes_confirmation() {
-  case "$(cn_trim "${1:-}")" in
+  case "$(normalize_confirmation_input "${1:-}")" in
     YES|yes|Y|y) return 0 ;;
     *) return 1 ;;
   esac
@@ -1285,11 +1302,20 @@ confirm_post_apply_rules() {
 
   local timeout="${CN_POST_APPLY_TIMEOUT:-60}"
   local confirm=""
+  visual_discard_pending_input
   echo
   echo "规则已临时应用。请立刻用新窗口测试 SSH/业务端口。"
   echo "如果 ${timeout} 秒内没有输入 YES/yes/y，脚本会自动清理本次规则，避免锁死。"
-  read -r -t "${timeout}" -p "确认新连接可访问并保存开机恢复？输入 YES/yes/y: " confirm < /dev/tty || confirm=""
-  is_yes_confirmation "${confirm}"
+  if ! IFS= read -r -t "${timeout}" -p "确认新连接可访问并保存开机恢复？输入 YES/yes/y: " confirm < /dev/tty; then
+    echo >&2
+    echo "确认等待超时或终端输入已关闭。" >&2
+    return 1
+  fi
+  if ! is_yes_confirmation "${confirm}"; then
+    echo "确认内容无效；仅接受 YES、yes、Y 或 y。" >&2
+    return 1
+  fi
+  return 0
 }
 
 parse_update_mode() {

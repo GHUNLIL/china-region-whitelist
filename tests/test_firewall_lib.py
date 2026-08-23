@@ -4,8 +4,12 @@ import unittest
 import importlib.util
 import ipaddress
 import os
+import pty
+import select
+import signal
 import shutil
 import tempfile
+import time
 from pathlib import Path
 
 
@@ -335,6 +339,78 @@ class FirewallLibTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), "b|b")
+
+    def test_yes_confirmation_ignores_terminal_control_sequences(self):
+        command = (
+            f"source {INSTALL_SH}; "
+            "for value in y Y yes YES ' y ' $'y\\r' $'\\e[Ay' $'\\e[200~y\\e[201~'; do "
+            "is_yes_confirmation \"${value}\" || exit 11; done; "
+            "for value in '' n no maybe yup; do "
+            "if is_yes_confirmation \"${value}\"; then exit 12; fi; done"
+        )
+        result = subprocess.run(
+            ["bash", "-c", command], text=True, capture_output=True, check=False
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_post_apply_confirmation_handles_pending_arrow_and_pasted_y(self):
+        def run_case(pending: bytes, answer: bytes) -> str:
+            master, slave = pty.openpty()
+            env = os.environ.copy()
+            env["TERM"] = "xterm-256color"
+            process = subprocess.Popen(
+                [
+                    "bash",
+                    "-c",
+                    f"source {INSTALL_SH}; sleep 0.15; CN_POST_APPLY_TIMEOUT=2; "
+                    "if confirm_post_apply_rules; then echo CONFIRMED; else echo REJECTED; fi",
+                ],
+                stdin=slave,
+                stdout=slave,
+                stderr=slave,
+                env=env,
+                start_new_session=True,
+            )
+            os.close(slave)
+            output = bytearray()
+            try:
+                os.write(master, pending)
+                deadline = time.time() + 2
+                while time.time() < deadline and b"YES/yes/y:" not in output:
+                    ready, _, _ = select.select([master], [], [], 0.05)
+                    if ready:
+                        try:
+                            output.extend(os.read(master, 65536))
+                        except OSError:
+                            break
+                os.write(master, answer)
+                deadline = time.time() + 3
+                while time.time() < deadline and process.poll() is None:
+                    ready, _, _ = select.select([master], [], [], 0.05)
+                    if ready:
+                        try:
+                            output.extend(os.read(master, 65536))
+                        except OSError:
+                            break
+                process.wait(timeout=1)
+                return output.decode("utf-8", errors="replace")
+            finally:
+                if process.poll() is None:
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    process.wait(timeout=1)
+                os.close(master)
+
+        pending_arrow = run_case(b"\x1b[A", b"y\r")
+        pasted_y = run_case(b"", b"\x1b[200~y\x1b[201~\r")
+
+        self.assertIn("CONFIRMED", pending_arrow)
+        self.assertNotIn("REJECTED", pending_arrow)
+        self.assertIn("CONFIRMED", pasted_y)
+        self.assertNotIn("REJECTED", pasted_y)
 
     def test_install_script_offers_common_asn_presets_and_manual_input(self):
         script = INSTALL_SH.read_text(encoding="utf-8")

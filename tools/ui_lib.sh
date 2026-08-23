@@ -78,6 +78,14 @@ visual_read_key() {
   printf '%s' "${key}"
 }
 
+visual_discard_pending_input() {
+  [[ -r /dev/tty && ( -t 0 || -t 2 ) ]] || return 0
+  local _discarded
+  while IFS= read -rsn1 -t 0.02 _discarded < /dev/tty; do
+    :
+  done
+}
+
 visual_cancel_value() {
   local -a values=("$@")
   local wanted value
