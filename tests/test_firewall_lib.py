@@ -560,12 +560,52 @@ class FirewallLibTests(unittest.TestCase):
         self.assertIn("set port_policy_2_v4 {", result.stdout)
         self.assertIn("203.0.113.0/24", result.stdout)
         self.assertIn("198.51.100.7/32", result.stdout)
-        self.assertIn("tcp dport @port_policy_1_ports ip saddr @port_policy_1_v4 accept", result.stdout)
-        self.assertIn("tcp dport @port_policy_1_ports meta nfproto ipv4 reject", result.stdout)
-        self.assertIn("ct status dnat ct original proto-dst @port_policy_2_ports ip saddr @port_policy_2_v4 accept", result.stdout)
+        for protocol in ("tcp", "udp"):
+            self.assertIn(
+                f"{protocol} dport @port_policy_1_ports ip saddr @port_policy_1_v4 accept",
+                result.stdout,
+            )
+            self.assertIn(
+                f"{protocol} dport @port_policy_1_ports meta nfproto ipv4 reject",
+                result.stdout,
+            )
+            self.assertIn(
+                f"meta l4proto {protocol} ct status dnat ct original proto-dst "
+                "@port_policy_2_ports ip saddr @port_policy_2_v4 accept",
+                result.stdout,
+            )
+            self.assertIn(
+                f"meta l4proto {protocol} ct status dnat ct original proto-dst "
+                "@port_policy_2_ports meta nfproto ipv4 reject",
+                result.stdout,
+            )
         policy_reject = result.stdout.index("tcp dport @port_policy_1_ports meta nfproto ipv4 reject")
         global_accept = result.stdout.index("ip saddr @allowed_v4 accept")
         self.assertLess(policy_reject, global_accept)
+
+    def test_iptables_port_policy_covers_tcp_udp_input_and_dnat(self):
+        result = run_firewall_lib(
+            "CN_FIREWALL_BACKEND=iptables "
+            "cn_render_apply_commands '' all '' '' '53=测试省' 990000"
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for protocol in ("tcp", "udp"):
+            self.assertIn(
+                f"-p {protocol} -m conntrack --ctstate DNAT --ctorigdstport 53 "
+                "-m set --match-set cn_region_whitelist_port_1 src -j ACCEPT",
+                result.stdout,
+            )
+            self.assertIn(
+                f"-p {protocol} -m conntrack --ctstate DNAT --ctorigdstport 53 -j REJECT",
+                result.stdout,
+            )
+            self.assertIn(
+                f"-p {protocol} --dport 53 -m set --match-set "
+                "cn_region_whitelist_port_1 src -j ACCEPT",
+                result.stdout,
+            )
+            self.assertIn(f"-p {protocol} --dport 53 -j REJECT", result.stdout)
 
     def test_firewall_lib_skips_client_ip_when_nft_set_already_covers_it(self):
         result = run_firewall_lib(
@@ -649,7 +689,13 @@ class FirewallLibTests(unittest.TestCase):
         self.assertIn("tcp dport 22 ip saddr @port_exception_1_asn_deny_v4 reject", result.stdout)
         self.assertIn("udp dport 22 ip saddr @port_exception_1_asn_allow_v4 accept", result.stdout)
         self.assertIn(
-            "ct status dnat ct original proto-dst 22 ip saddr @port_exception_1_ip_deny_v4 reject",
+            "meta l4proto tcp ct status dnat ct original proto-dst 22 "
+            "ip saddr @port_exception_1_ip_deny_v4 reject",
+            result.stdout,
+        )
+        self.assertIn(
+            "meta l4proto udp ct status dnat ct original proto-dst 22 "
+            "ip saddr @port_exception_1_ip_deny_v4 reject",
             result.stdout,
         )
         self.assertLess(
@@ -669,13 +715,27 @@ class FirewallLibTests(unittest.TestCase):
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("-p tcp --dport 53 -m set --match-set cn_region_whitelist_e1ia src -j ACCEPT", result.stdout)
-        self.assertIn("-p udp --dport 53 -m set --match-set cn_region_whitelist_e1ia src -j ACCEPT", result.stdout)
-        self.assertIn(
-            "-p udp -m conntrack --ctstate DNAT --ctorigdstport 53 "
-            "-m set --match-set cn_region_whitelist_e1ad src -j REJECT",
-            result.stdout,
-        )
+        for protocol in ("tcp", "udp"):
+            self.assertIn(
+                f"-p {protocol} --dport 53 -m set --match-set "
+                "cn_region_whitelist_e1ia src -j ACCEPT",
+                result.stdout,
+            )
+            self.assertIn(
+                f"-p {protocol} -m conntrack --ctstate DNAT --ctorigdstport 53 "
+                "-m set --match-set cn_region_whitelist_e1ia src -j ACCEPT",
+                result.stdout,
+            )
+            self.assertIn(
+                f"-p {protocol} --dport 53 -m set --match-set "
+                "cn_region_whitelist_e1ad src -j REJECT",
+                result.stdout,
+            )
+            self.assertIn(
+                f"-p {protocol} -m conntrack --ctstate DNAT --ctorigdstport 53 "
+                "-m set --match-set cn_region_whitelist_e1ad src -j REJECT",
+                result.stdout,
+            )
 
     def test_port_exception_conflicts_and_duplicate_ports_are_rejected(self):
         conflict = run_firewall_lib(
@@ -712,12 +772,22 @@ class FirewallLibTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(
-            'iifname "tun0" ct status dnat ct original proto-dst 22 '
+            'iifname "tun0" meta l4proto tcp ct status dnat ct original proto-dst 22 '
             "ip saddr @port_exception_1_ip_deny_v4 reject",
             result.stdout,
         )
         self.assertIn(
-            'oifname "tun0" ct status dnat ct original proto-dst 22 '
+            'iifname "tun0" meta l4proto udp ct status dnat ct original proto-dst 22 '
+            "ip saddr @port_exception_1_ip_deny_v4 reject",
+            result.stdout,
+        )
+        self.assertIn(
+            'oifname "tun0" meta l4proto tcp ct status dnat ct original proto-dst 22 '
+            "ip saddr @port_exception_1_ip_deny_v4 reject",
+            result.stdout,
+        )
+        self.assertIn(
+            'oifname "tun0" meta l4proto udp ct status dnat ct original proto-dst 22 '
             "ip saddr @port_exception_1_ip_deny_v4 reject",
             result.stdout,
         )

@@ -1072,14 +1072,16 @@ cn_render_nft_port_exception_forward_rules() {
   local port_spec="$2"
   local rules="$3"
   local prefix="${CN_NFT_FORWARD_RULE_PREFIX:-}"
-  local action kind values set_name verdict
+  local action kind values set_name verdict protocol
   for kind in ip asn; do
     for action in deny allow; do
       values="$(cn_collect_port_exception_values "${rules}" "${action}" "${kind}")" || return 1
       [[ -n "${values}" ]] || continue
       set_name="$(cn_nft_port_exception_set_name "${index}" "${action}" "${kind}")"
       [[ "${action}" == "deny" ]] && verdict="reject" || verdict="accept"
-      printf '    %sct status dnat ct original proto-dst %s ip saddr @%s %s\n' "${prefix}" "${port_spec}" "${set_name}" "${verdict}"
+      for protocol in tcp udp; do
+        printf '    %smeta l4proto %s ct status dnat ct original proto-dst %s ip saddr @%s %s\n' "${prefix}" "${protocol}" "${port_spec}" "${set_name}" "${verdict}"
+      done
     done
   done
 }
@@ -1338,8 +1340,11 @@ cn_render_nft_port_policy_forward_rules() {
   local _port_spec="$2"
   local _selectors="$3"
   local prefix="${CN_NFT_FORWARD_RULE_PREFIX:-}"
-  printf '    %sct status dnat ct original proto-dst @port_policy_%s_ports ip saddr @port_policy_%s_v4 accept\n' "${prefix}" "${index}" "${index}"
-  printf '    %sct status dnat ct original proto-dst @port_policy_%s_ports meta nfproto ipv4 reject\n' "${prefix}" "${index}"
+  local protocol
+  for protocol in tcp udp; do
+    printf '    %smeta l4proto %s ct status dnat ct original proto-dst @port_policy_%s_ports ip saddr @port_policy_%s_v4 accept\n' "${prefix}" "${protocol}" "${index}" "${index}"
+    printf '    %smeta l4proto %s ct status dnat ct original proto-dst @port_policy_%s_ports meta nfproto ipv4 reject\n' "${prefix}" "${protocol}" "${index}"
+  done
 }
 
 cn_render_clear_commands() {
