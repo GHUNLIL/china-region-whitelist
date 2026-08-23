@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${ROOT}/tools/firewall_lib.sh"
+source "${ROOT}/tools/ui_lib.sh"
 exec 3<&0
 
 usage() {
@@ -35,183 +36,7 @@ usage() {
 EOF
 }
 
-pick_by_indices() {
-  local prompt="$1"
-  local max="$2"
-  local input
-  while true; do
-    read -r -p "${prompt}" input
-    input="${input//,/ }"
-    [[ -n "${input}" ]] || continue
-    local ok=1
-    for value in ${input}; do
-      if ! [[ "${value}" =~ ^[0-9]+$ ]] || (( value < 1 || value > max )); then
-        ok=0
-      fi
-    done
-    if [[ "${ok}" -eq 1 ]]; then
-      echo "${input}"
-      return
-    fi
-    echo "输入无效，请输入 1-${max} 范围内的编号，可用空格或逗号分隔。"
-  done
-}
-
-split_user_list() {
-  local input="$1"
-  input="${input//,/ }"
-  input="${input//，/ }"
-  input="${input//、/ }"
-  printf '%s\n' "${input}" | tr '[:space:]' '\n'
-}
-
-read_from_tty() {
-  local prompt="$1"
-  local value
-  if [[ "${CN_READ_FROM_STDIN:-0}" != "1" && -r /dev/tty && ( -t 0 || -t 2 ) ]]; then
-    read -r -p "${prompt}" value < /dev/tty
-  else
-    printf '%s' "${prompt}" >&2
-    read -r value <&3 || value=""
-  fi
-  printf '%s\n' "${value}"
-}
-
-visual_menu_available() {
-  [[ "${CN_VISUAL_MENU:-1}" != "0" && -r /dev/tty && ( -t 0 || -t 2 ) && "${TERM:-}" != "dumb" ]]
-}
-
-visual_clear_screen() {
-  printf '\033[H\033[J' >&2
-}
-
-visual_read_key() {
-  local key rest
-  IFS= read -rsn1 key < /dev/tty || key=""
-  if [[ "${key}" == $'\x1b' ]]; then
-    IFS= read -rsn2 -t 1 rest < /dev/tty || rest=""
-    key+="${rest}"
-  fi
-  printf '%s' "${key}"
-}
-
-visual_multi_select() {
-  local title="$1"
-  local allow_empty="$2"
-  shift 2
-  VISUAL_SELECTED_VALUES=()
-  VISUAL_SELECTED_LABELS=()
-
-  local -a labels values checked
-  while (($# > 0)); do
-    labels+=("$1")
-    values+=("$2")
-    checked+=(0)
-    shift 2
-  done
-
-  local current=0
-  local key selected_count i cursor mark
-  while true; do
-    visual_clear_screen
-    printf '%s\n' "${title}" >&2
-    printf '上/下键移动，空格勾选，回车确认。A 全选，C 清空。\n\n' >&2
-    for ((i = 0; i < ${#labels[@]}; i++)); do
-      cursor=" "
-      [[ "${i}" -eq "${current}" ]] && cursor=">"
-      mark="[ ]"
-      [[ "${checked[$i]}" -eq 1 ]] && mark="[x]"
-      printf '%s %s %s\n' "${cursor}" "${mark}" "${labels[$i]}" >&2
-    done
-
-    key="$(visual_read_key)"
-    case "${key}" in
-      $'\x1b[A'|k|K)
-        ((current > 0)) && current=$((current - 1))
-        ;;
-      $'\x1b[B'|j|J)
-        ((current < ${#labels[@]} - 1)) && current=$((current + 1))
-        ;;
-      " ")
-        if [[ "${checked[$current]}" -eq 1 ]]; then
-          checked[current]=0
-        else
-          checked[current]=1
-        fi
-        ;;
-      a|A)
-        for ((i = 0; i < ${#checked[@]}; i++)); do
-          checked[i]=1
-        done
-        ;;
-      c|C)
-        for ((i = 0; i < ${#checked[@]}; i++)); do
-          checked[i]=0
-        done
-        ;;
-      "")
-        selected_count=0
-        for ((i = 0; i < ${#checked[@]}; i++)); do
-          [[ "${checked[$i]}" -eq 1 ]] && selected_count=$((selected_count + 1))
-        done
-        if [[ "${selected_count}" -eq 0 && "${allow_empty}" != "1" ]]; then
-          printf '\n至少选择一项，按任意键继续。' >&2
-          IFS= read -rsn1 _ < /dev/tty || true
-          continue
-        fi
-        for ((i = 0; i < ${#checked[@]}; i++)); do
-          if [[ "${checked[$i]}" -eq 1 ]]; then
-            VISUAL_SELECTED_VALUES+=("${values[$i]}")
-            VISUAL_SELECTED_LABELS+=("${labels[$i]}")
-          fi
-        done
-        visual_clear_screen
-        return 0
-        ;;
-    esac
-  done
-}
-
-visual_single_select() {
-  local title="$1"
-  shift
-  VISUAL_SELECTED_VALUE=""
-
-  local -a labels values
-  while (($# > 0)); do
-    labels+=("$1")
-    values+=("$2")
-    shift 2
-  done
-
-  local current=0
-  local key i cursor
-  while true; do
-    visual_clear_screen
-    printf '%s\n' "${title}" >&2
-    printf '上/下键移动，回车确认。\n\n' >&2
-    for ((i = 0; i < ${#labels[@]}; i++)); do
-      cursor=" "
-      [[ "${i}" -eq "${current}" ]] && cursor=">"
-      printf '%s %s\n' "${cursor}" "${labels[$i]}" >&2
-    done
-
-    key="$(visual_read_key)"
-    case "${key}" in
-      $'\x1b[A'|k|K)
-        ((current > 0)) && current=$((current - 1))
-        ;;
-      $'\x1b[B'|j|J)
-        ((current < ${#labels[@]} - 1)) && current=$((current + 1))
-        ;;
-      ""|" ")
-        VISUAL_SELECTED_VALUE="${values[$current]}"
-        visual_clear_screen
-        return 0
-        ;;
-    esac
-  done
-}
+# ---------- Menu data and compact summaries ----------
 
 load_province_menu_options() {
   PROVINCE_MENU_LABELS=()
@@ -269,29 +94,6 @@ append_unique_selected_asn() {
   SELECTED_ASNS+=("${candidate}")
 }
 
-join_by_delim() {
-  local delim="$1"
-  shift
-  local out="" item
-  for item in "$@"; do
-    [[ -n "${item}" ]] || continue
-    if [[ -z "${out}" ]]; then
-      out="${item}"
-    else
-      out+="${delim}${item}"
-    fi
-  done
-  printf '%s\n' "${out}"
-}
-
-join_by_comma() {
-  join_by_delim "," "$@"
-}
-
-join_by_semicolon() {
-  join_by_delim ";" "$@"
-}
-
 codes_summary() {
   local -a codes=("$@")
   if [[ "${#codes[@]}" -eq 1 ]] && cn_is_all_china_selector "${codes[0]}"; then
@@ -330,31 +132,36 @@ rule_text_summary() {
   fi
 }
 
-code_at_index() {
-  local rows="$1"
-  local index="$2"
-  awk -F '\t' -v wanted="${index}" '$1 == wanted {print $2}' <<<"${rows}"
-}
+# ---------- Default source and ASN editors ----------
 
 interactive_select_codes() {
+  local -a initial_codes=("$@")
   SELECTED_CODES=()
   if visual_menu_available; then
     load_province_menu_options
     local -a menu_items
     local province_value i
     menu_items=(
-      "全国（中国大陆 CN）" "__ALL__"
-      "三大运营商公众接入网（近似普通家宽）" "__HOME__"
+      "全国（中国大陆 CN）" "CN"
+      "三大运营商公众接入网（近似普通家宽）" "HOME"
     )
     for ((i = 0; i < ${#PROVINCE_MENU_LABELS[@]}; i++)); do
       menu_items+=("${PROVINCE_MENU_LABELS[$i]}" "${PROVINCE_MENU_CODES[$i]}")
     done
 
-    visual_multi_select "请选择整机默认白名单（全国/家宽/省份）" 0 "${menu_items[@]}"
+    visual_multi_select \
+      "默认白名单（全国、家宽、具体省份可多选）" \
+      0 \
+      "$(join_by_delim " " "${initial_codes[@]}")" \
+      "${menu_items[@]}"
+    if [[ "${VISUAL_CANCELLED}" -eq 1 ]]; then
+      SELECTED_CODES=("${initial_codes[@]}")
+      return 1
+    fi
     for province_value in "${VISUAL_SELECTED_VALUES[@]}"; do
-      if [[ "${province_value}" == "__ALL__" ]]; then
+      if [[ "${province_value}" == "CN" ]]; then
         append_unique_selected_code "CN"
-      elif [[ "${province_value}" == "__HOME__" ]]; then
+      elif [[ "${province_value}" == "HOME" ]]; then
         append_unique_selected_code "HOME"
       else
         append_unique_selected_code "${province_value}"
@@ -390,18 +197,32 @@ interactive_select_codes() {
 }
 
 interactive_select_asns() {
+  local -a initial_asns=("$@")
   SELECTED_ASNS=()
   load_common_asn_menu_options
   local manual_input=0
-  local asn_input asn_selector i selected_value
+  local asn_input asn_selector existing_asn i selected_value
   local -a menu_items
   if visual_menu_available; then
     menu_items=()
     for ((i = 0; i < ${#COMMON_ASN_LABELS[@]}; i++)); do
       menu_items+=("${COMMON_ASN_LABELS[$i]}" "${COMMON_ASN_VALUES[$i]}")
     done
+    for existing_asn in "${initial_asns[@]}"; do
+      if ! ui_value_in_list "${existing_asn}" "${COMMON_ASN_VALUES[@]}"; then
+        menu_items+=("已配置的自定义 ASN — ${existing_asn}" "${existing_asn}")
+      fi
+    done
     menu_items+=("手动输入其他 ASN" "__MANUAL__")
-    visual_multi_select "常用 ASN 白名单（可多选，也可留空）" 1 "${menu_items[@]}"
+    visual_multi_select \
+      "ASN 白名单（可多选；已配置项会自动勾选）" \
+      1 \
+      "$(join_by_delim " " "${initial_asns[@]}")" \
+      "${menu_items[@]}"
+    if [[ "${VISUAL_CANCELLED}" -eq 1 ]]; then
+      SELECTED_ASNS=("${initial_asns[@]}")
+      return 1
+    fi
     for selected_value in "${VISUAL_SELECTED_VALUES[@]}"; do
       if [[ "${selected_value}" == "__MANUAL__" ]]; then
         manual_input=1
@@ -432,42 +253,63 @@ interactive_select_asns() {
   done < <(split_user_list "${asn_input}")
 }
 
+# ---------- Explicit allow/deny rule editors ----------
+
 interactive_select_global_ip_rules() {
-  local action_input action target candidate combined done_label
+  local initial_rules="${1:-}"
+  local action_input action target candidate combined current_text done_label index i raw_rule parsed kind value
   local -a rules
   rules=()
   SELECTED_GLOBAL_IP_RULES=""
+  while IFS= read -r raw_rule; do
+    raw_rule="$(cn_trim "${raw_rule}")"
+    [[ -n "${raw_rule}" ]] || continue
+    parsed="$(cn_parse_ip_or_asn_action_rule "${raw_rule}")" || return 1
+    IFS=$'\t' read -r action kind value <<<"${parsed}"
+    [[ "${kind}" == "ip" ]] || return 1
+    rules+=("${action}:${value}")
+  done < <(cn_split_selector_list "${initial_rules}")
 
   while true; do
+    current_text="$(join_by_comma "${rules[@]}")"
     if ((${#rules[@]} == 0)); then
-      done_label="完成，不配置全局单 IP"
+      done_label="保存并返回（当前未配置）"
     else
-      done_label="完成，使用已添加的 ${#rules[@]} 条规则"
+      done_label="保存并返回（${#rules[@]} 条规则）"
     fi
 
     if visual_menu_available; then
       visual_single_select \
-        "全局单 IP 允许/屏蔽" \
+        "全局单 IP 允许/屏蔽
+
+当前：${current_text:-未配置}" \
         "允许一个 IP" "allow" \
         "屏蔽一个 IP" "deny" \
-        "手动输入完整规则" "manual" \
-        "${done_label}" "done"
+        "删除一条已有规则" "delete" \
+        "手动替换完整规则" "manual" \
+        "清空全部规则" "clear" \
+        "${done_label}" "done" \
+        "取消，保留进入前的配置" "cancel"
       action_input="${VISUAL_SELECTED_VALUE}"
     else
       echo >&2
-      echo "全局单 IP 规则（当前已添加 ${#rules[@]} 条）：" >&2
+      echo "全局单 IP 规则（当前：${current_text:-未配置}）：" >&2
       echo "  1) 允许一个 IP" >&2
       echo "  2) 屏蔽一个 IP" >&2
       echo "  3) 完成" >&2
       echo "  4) 手动输入完整规则" >&2
-      action_input="$(read_from_tty "请选择 [1-4]: ")"
+      echo "  5) 删除一条规则" >&2
+      echo "  6) 清空全部规则" >&2
+      action_input="$(read_from_tty "请选择 [1-6]: ")"
       case "$(cn_trim "${action_input}")" in
         1|allow|ALLOW|允许|放行) action_input="allow" ;;
         2|deny|DENY|屏蔽|拒绝|禁止) action_input="deny" ;;
         3|done|DONE|完成|"") action_input="done" ;;
         4|manual|MANUAL|手动) action_input="manual" ;;
+        5|delete|DELETE|删除) action_input="delete" ;;
+        6|clear|CLEAR|清空) action_input="clear" ;;
         *)
-          echo "无效选择，请输入 1、2、3 或 4。" >&2
+          echo "无效选择，请输入 1-6。" >&2
           continue
           ;;
       esac
@@ -499,12 +341,61 @@ interactive_select_global_ip_rules() {
         rules+=("${candidate}")
         printf '已添加：%s\n' "${candidate}" >&2
         ;;
+      delete)
+        if ((${#rules[@]} == 0)); then
+          echo "当前没有可删除的全局单 IP 规则。" >&2
+          if visual_menu_available; then
+            pause_visual
+          fi
+          continue
+        fi
+        if visual_menu_available; then
+          local -a delete_items
+          delete_items=()
+          for ((i = 0; i < ${#rules[@]}; i++)); do
+            delete_items+=("$((i + 1)). ${rules[$i]}" "${i}")
+          done
+          delete_items+=("取消" "cancel")
+          visual_single_select "选择要删除的全局单 IP 规则" "${delete_items[@]}"
+          [[ "${VISUAL_SELECTED_VALUE}" != "cancel" ]] || continue
+          index="${VISUAL_SELECTED_VALUE}"
+        else
+          for ((i = 0; i < ${#rules[@]}; i++)); do
+            printf '  %d) %s\n' "$((i + 1))" "${rules[$i]}" >&2
+          done
+          index="$(read_from_tty "输入要删除的编号（留空取消）: ")"
+          if ! [[ "${index}" =~ ^[0-9]+$ ]] || ((index < 1 || index > ${#rules[@]})); then
+            continue
+          fi
+          index=$((index - 1))
+        fi
+        local -a next_rules
+        next_rules=()
+        for ((i = 0; i < ${#rules[@]}; i++)); do
+          [[ "${i}" -eq "${index}" ]] || next_rules+=("${rules[$i]}")
+        done
+        rules=("${next_rules[@]}")
+        ;;
       manual)
         echo "格式：allow:1.2.3.4,deny:5.6.7.8；也支持 +1.2.3.4,-5.6.7.8。" >&2
-        combined="$(read_from_tty "完整全局单 IP 规则（可空）: ")"
-        cn_validate_global_ip_rules "${combined}"
+        combined="$(read_from_tty "完整规则（直接回车取消，输入 - 清空）: ")"
+        [[ -n "$(cn_trim "${combined}")" ]] || continue
+        [[ "$(cn_trim "${combined}")" != "-" ]] || {
+          rules=()
+          continue
+        }
+        if ! cn_validate_global_ip_rules "${combined}"; then
+          echo "完整规则无效，未修改。" >&2
+          if visual_menu_available; then
+            pause_visual
+          fi
+          continue
+        fi
         SELECTED_GLOBAL_IP_RULES="${combined}"
         return 0
+        ;;
+      clear)
+        rules=()
         ;;
       done)
         if ((${#rules[@]} > 0)); then
@@ -512,18 +403,58 @@ interactive_select_global_ip_rules() {
         fi
         return 0
         ;;
+      cancel)
+        SELECTED_GLOBAL_IP_RULES="${initial_rules}"
+        return 1
+        ;;
     esac
   done
 }
 
 interactive_select_port_exceptions() {
-  local exceptions_input
+  local initial_exceptions="${1:-}"
+  local exceptions_input action
+  if visual_menu_available; then
+    visual_single_select \
+      "端口 IP/ASN 例外（最高优先级）
+
+当前：${initial_exceptions:-未配置}" \
+      "手动替换完整配置" "replace" \
+      "清空全部端口例外" "clear" \
+      "返回，不修改" "back"
+    action="${VISUAL_SELECTED_VALUE}"
+    case "${action}" in
+      back)
+        SELECTED_PORT_EXCEPTIONS="${initial_exceptions}"
+        return 1
+        ;;
+      clear)
+        SELECTED_PORT_EXCEPTIONS=""
+        return 0
+        ;;
+    esac
+  fi
   echo >&2
   echo "可选：单端口+IP/ASN 允许/屏蔽（最高优先级，同时作用于 TCP/UDP）。" >&2
   echo "格式：22=allow:1.2.3.4,deny:AS4809;443=allow:AS4134,deny:5.6.7.8" >&2
   echo "每个端口只写一次；单 IP 比 ASN 更具体，因此优先于同端口 ASN 规则。" >&2
-  exceptions_input="$(read_from_tty "端口 IP/ASN 例外（可空）: ")"
-  cn_validate_port_exceptions "${exceptions_input}"
+  if visual_menu_available; then
+    exceptions_input="$(read_from_tty "输入新配置（直接回车取消）: ")"
+    [[ -n "$(cn_trim "${exceptions_input}")" ]] || {
+      SELECTED_PORT_EXCEPTIONS="${initial_exceptions}"
+      return 1
+    }
+  else
+    exceptions_input="$(read_from_tty "端口 IP/ASN 例外（可空）: ")"
+  fi
+  if ! cn_validate_port_exceptions "${exceptions_input}"; then
+    echo "端口例外配置无效，未修改。" >&2
+    if visual_menu_available; then
+      pause_visual
+    fi
+    SELECTED_PORT_EXCEPTIONS="${initial_exceptions}"
+    return 1
+  fi
   SELECTED_PORT_EXCEPTIONS="${exceptions_input}"
 }
 
@@ -539,6 +470,8 @@ read_manual_port_policies() {
   cn_validate_port_policies "${policy_input}"
   SELECTED_PORT_POLICIES="${policy_input}"
 }
+
+# ---------- Port policy builders ----------
 
 interactive_select_port_policies_line() {
   echo >&2
@@ -568,13 +501,62 @@ normalize_extra_policy_selectors() {
   done < <(split_user_list "${extra_input}")
 }
 
+append_unique_port_policy_selector() {
+  local candidate="$1"
+  local existing
+  for existing in "${PORT_POLICY_SELECTORS[@]}"; do
+    [[ "${existing}" == "${candidate}" ]] && return 0
+  done
+  PORT_POLICY_SELECTORS+=("${candidate}")
+}
+
+load_port_policy_editor_state() {
+  local existing_policy="$1"
+  PORT_POLICY_PORT=""
+  PORT_POLICY_DOMESTIC_SELECTORS=()
+  PORT_POLICY_EXTRA_SELECTORS=()
+  [[ -n "${existing_policy}" ]] || return 0
+
+  PORT_POLICY_PORT="$(cn_trim "${existing_policy%%=*}")"
+  local selector code name asn
+  while IFS= read -r selector; do
+    selector="$(cn_trim "${selector}")"
+    [[ -n "${selector}" ]] || continue
+    if cn_is_all_china_selector "${selector}"; then
+      PORT_POLICY_DOMESTIC_SELECTORS+=("全国")
+    elif cn_is_home_broadband_selector "${selector}"; then
+      PORT_POLICY_DOMESTIC_SELECTORS+=("HOME")
+    elif [[ "${selector}" =~ ^[Aa][Ss][0-9]+$ ]]; then
+      asn="$(cn_normalize_asn "${selector}")"
+      PORT_POLICY_EXTRA_SELECTORS+=("AS${asn}")
+    elif cn_validate_ipv4_cidr "${selector}"; then
+      PORT_POLICY_EXTRA_SELECTORS+=("${selector}")
+    else
+      code="$(cn_resolve_province "${selector}")"
+      name="$(cn_province_name "${code}")"
+      PORT_POLICY_DOMESTIC_SELECTORS+=("${name}")
+    fi
+  done < <(cn_split_selector_list "${existing_policy#*=}")
+}
+
 build_port_policy_visual() {
+  local existing_policy="${1:-}"
   PORT_POLICY_ITEM=""
-  local port_spec extra_input selector_text i
+  load_port_policy_editor_state "${existing_policy}"
+  local port_spec extra_input selector selector_text i
   local -a menu_items selectors
 
   while true; do
-    port_spec="$(read_from_tty "端口或端口范围，例如 22 或 10000-20000: ")"
+    if [[ -n "${PORT_POLICY_PORT}" ]]; then
+      port_spec="$(read_from_tty "端口或范围 [当前 ${PORT_POLICY_PORT}，回车保留，Q 取消]: ")"
+      case "$(cn_trim "${port_spec}")" in
+        q|Q) return 1 ;;
+        "") port_spec="${PORT_POLICY_PORT}" ;;
+      esac
+    else
+      port_spec="$(read_from_tty "端口或范围，例如 22 或 10000-20000（留空取消）: ")"
+      [[ -n "$(cn_trim "${port_spec}")" ]] || return 1
+    fi
     if cn_validate_port_spec "${port_spec}"; then
       break
     fi
@@ -589,10 +571,25 @@ build_port_policy_visual() {
   for ((i = 0; i < ${#PROVINCE_MENU_LABELS[@]}; i++)); do
     menu_items+=("${PROVINCE_MENU_LABELS[$i]}" "${PROVINCE_MENU_NAMES[$i]}")
   done
-  visual_multi_select "请选择端口 ${port_spec} 允许的国内省份（可空，后续可输入 ASN/IP）" 1 "${menu_items[@]}"
+  visual_multi_select \
+    "端口 ${port_spec} 允许的国内来源（可空）" \
+    1 \
+    "$(join_by_delim " " "${PORT_POLICY_DOMESTIC_SELECTORS[@]}")" \
+    "${menu_items[@]}"
+  [[ "${VISUAL_CANCELLED}" -eq 0 ]] || return 1
   selectors=("${VISUAL_SELECTED_VALUES[@]}")
 
-  extra_input="$(read_from_tty "额外 ASN/IP/CIDR（可空，多个用空格或逗号分隔）: ")"
+  if ((${#PORT_POLICY_EXTRA_SELECTORS[@]} > 0)); then
+    extra_input="$(read_from_tty "额外 ASN/IP/CIDR [当前 ${PORT_POLICY_EXTRA_SELECTORS[*]}；回车保留，- 清空，Q 取消]: ")"
+    case "$(cn_trim "${extra_input}")" in
+      q|Q) return 1 ;;
+      "") extra_input="${PORT_POLICY_EXTRA_SELECTORS[*]}" ;;
+      -) extra_input="" ;;
+    esac
+  else
+    extra_input="$(read_from_tty "额外 ASN/IP/CIDR（可空，多个用空格或逗号分隔）: ")"
+    [[ "$(cn_trim "${extra_input}")" != "q" && "$(cn_trim "${extra_input}")" != "Q" ]] || return 1
+  fi
   if [[ -n "$(cn_trim "${extra_input}")" ]]; then
     normalize_extra_policy_selectors "${extra_input}"
     selectors+=("${EXTRA_POLICY_SELECTORS[@]}")
@@ -603,7 +600,18 @@ build_port_policy_visual() {
     return 1
   fi
 
-  selector_text="$(join_by_comma "${selectors[@]}")"
+  PORT_POLICY_SELECTORS=()
+  for selector in "${selectors[@]}"; do
+    if [[ "${selector}" == "全国" ]]; then
+      PORT_POLICY_SELECTORS=("全国")
+      continue
+    fi
+    if ui_value_in_list "全国" "${PORT_POLICY_SELECTORS[@]}" && ! [[ "${selector}" =~ ^[Aa][Ss][0-9]+$ ]] && ! cn_validate_ipv4_cidr "${selector}"; then
+      continue
+    fi
+    append_unique_port_policy_selector "${selector}"
+  done
+  selector_text="$(join_by_comma "${PORT_POLICY_SELECTORS[@]}")"
   PORT_POLICY_ITEM="${port_spec}=${selector_text}"
   cn_validate_port_policies "${PORT_POLICY_ITEM}"
 }
@@ -653,11 +661,6 @@ interactive_select_port_policies() {
   done
 }
 
-pause_visual() {
-  local message="${1:-按回车返回...}"
-  read_from_tty "${message}" >/dev/null
-}
-
 codes_detail() {
   local -a codes=("$@")
   local -a names
@@ -681,53 +684,69 @@ codes_detail() {
 }
 
 edit_global_codes_visual() {
-  interactive_select_codes
-  CONFIG_CODES=()
-  if ((${#SELECTED_CODES[@]} > 0)); then
-    CONFIG_CODES=("${SELECTED_CODES[@]}")
+  if interactive_select_codes "${CONFIG_CODES[@]}"; then
+    CONFIG_CODES=()
+    if ((${#SELECTED_CODES[@]} > 0)); then
+      CONFIG_CODES=("${SELECTED_CODES[@]}")
+    fi
   fi
 }
 
 edit_global_asns_visual() {
-  interactive_select_asns
-  CONFIG_ASNS=()
-  if ((${#SELECTED_ASNS[@]} > 0)); then
-    CONFIG_ASNS=("${SELECTED_ASNS[@]}")
+  if interactive_select_asns "${CONFIG_ASNS[@]}"; then
+    CONFIG_ASNS=()
+    if ((${#SELECTED_ASNS[@]} > 0)); then
+      CONFIG_ASNS=("${SELECTED_ASNS[@]}")
+    fi
   fi
 }
 
 edit_global_ip_rules_visual() {
-  interactive_select_global_ip_rules
-  CONFIG_GLOBAL_IP_RULES="${SELECTED_GLOBAL_IP_RULES}"
+  if interactive_select_global_ip_rules "${CONFIG_GLOBAL_IP_RULES}"; then
+    CONFIG_GLOBAL_IP_RULES="${SELECTED_GLOBAL_IP_RULES}"
+  fi
 }
 
 edit_port_exceptions_visual() {
-  interactive_select_port_exceptions
-  CONFIG_PORT_EXCEPTIONS="${SELECTED_PORT_EXCEPTIONS}"
+  if interactive_select_port_exceptions "${CONFIG_PORT_EXCEPTIONS}"; then
+    CONFIG_PORT_EXCEPTIONS="${SELECTED_PORT_EXCEPTIONS}"
+  fi
 }
 
 set_config_port_policies_from_text() {
   local policy_text="$1"
   local raw_policy
   local -a policy_items next
-  CONFIG_PORT_POLICIES=()
   policy_text="${policy_text//；/;}"
-  [[ -n "$(cn_trim "${policy_text}")" ]] || return 0
-  cn_validate_port_policies "${policy_text}"
+  if [[ -z "$(cn_trim "${policy_text}")" ]]; then
+    CONFIG_PORT_POLICIES=()
+    return 0
+  fi
+  cn_validate_port_policies "${policy_text}" || return 1
   IFS=';' read -r -a policy_items <<<"${policy_text}"
   next=()
   for raw_policy in "${policy_items[@]}"; do
     raw_policy="$(cn_trim "${raw_policy}")"
     [[ -n "${raw_policy}" ]] && next+=("${raw_policy}")
   done
-  if ((${#next[@]} > 0)); then
-    CONFIG_PORT_POLICIES=("${next[@]}")
-  fi
+  CONFIG_PORT_POLICIES=()
+  ((${#next[@]} == 0)) || CONFIG_PORT_POLICIES=("${next[@]}")
 }
 
 manual_edit_port_policies_visual() {
-  read_manual_port_policies "完整端口策略（可空）: "
-  set_config_port_policies_from_text "${SELECTED_PORT_POLICIES}"
+  local current input
+  current="$(join_by_semicolon "${CONFIG_PORT_POLICIES[@]}")"
+  printf '当前完整端口策略：%s\n' "${current:-未配置}" >&2
+  input="$(read_from_tty "输入新策略；直接回车取消，输入 - 清空全部: ")"
+  [[ -n "$(cn_trim "${input}")" ]] || return 0
+  if [[ "$(cn_trim "${input}")" == "-" ]]; then
+    CONFIG_PORT_POLICIES=()
+    return 0
+  fi
+  if ! set_config_port_policies_from_text "${input}"; then
+    echo "端口策略无效，已保留原配置。" >&2
+    pause_visual
+  fi
 }
 
 add_port_policy_visual() {
@@ -763,7 +782,7 @@ edit_port_policy_visual() {
   choose_port_policy_index || return 0
   index="${CHOSEN_PORT_POLICY_INDEX}"
   printf '正在修改：%s\n' "${CONFIG_PORT_POLICIES[$index]}" >&2
-  if build_port_policy_visual; then
+  if build_port_policy_visual "${CONFIG_PORT_POLICIES[$index]}"; then
     CONFIG_PORT_POLICIES[index]="${PORT_POLICY_ITEM}"
     printf '已修改为：%s\n' "${PORT_POLICY_ITEM}" >&2
     pause_visual
@@ -775,6 +794,13 @@ delete_port_policy_visual() {
   local -a next
   choose_port_policy_index || return 0
   index="${CHOSEN_PORT_POLICY_INDEX}"
+  visual_single_select \
+    "确认删除端口策略
+
+${CONFIG_PORT_POLICIES[$index]}" \
+    "取消，保留该策略" "no" \
+    "确认删除" "yes"
+  [[ "${VISUAL_SELECTED_VALUE}" == "yes" ]] || return 0
   next=()
   for ((i = 0; i < ${#CONFIG_PORT_POLICIES[@]}; i++)); do
     [[ "${i}" -eq "${index}" ]] && continue
@@ -789,8 +815,74 @@ delete_port_policy_visual() {
   pause_visual
 }
 
+# ---------- Configuration dashboard and grouped menus ----------
+
+forward_scope_summary() {
+  local mode="$1"
+  shift
+  case "${mode}" in
+    all) printf '本机服务 + 所有 DNAT 转发' ;;
+    none) printf '仅本机服务' ;;
+    selected) printf '本机服务 + 指定接口（%s）' "$(join_by_delim " " "$@")" ;;
+    *) printf '未知（%s）' "${mode}" ;;
+  esac
+}
+
+edit_forward_scope_visual() {
+  local current_summary iface selected_mode
+  local -a detected_ifaces menu_items
+  current_summary="$(forward_scope_summary "${CONFIG_FORWARD_MODE}" "${CONFIG_FORWARD_IFACES[@]}")"
+  VISUAL_DEFAULT_VALUE="${CONFIG_FORWARD_MODE}"
+  visual_single_select \
+    "入站托管范围
+
+当前：${current_summary}" \
+    "本机服务 + 所有 DNAT 入站转发（推荐）" "all" \
+    "仅本机服务，不托管端口转发" "none" \
+    "本机服务 + 指定接口的 DNAT 转发" "selected" \
+    "返回，不修改" "back"
+  selected_mode="${VISUAL_SELECTED_VALUE}"
+  [[ "${selected_mode}" != "back" ]] || return 0
+
+  if [[ "${selected_mode}" != "selected" ]]; then
+    CONFIG_FORWARD_MODE="${selected_mode}"
+    CONFIG_FORWARD_IFACES=()
+    return 0
+  fi
+
+  detected_ifaces=()
+  while IFS= read -r iface; do
+    [[ -n "${iface}" && "${iface}" != "lo" ]] && detected_ifaces+=("${iface}")
+  done < <(cn_list_network_interfaces)
+  for iface in "${CONFIG_FORWARD_IFACES[@]}"; do
+    ui_value_in_list "${iface}" "${detected_ifaces[@]}" || detected_ifaces+=("${iface}")
+  done
+  if ((${#detected_ifaces[@]} == 0)); then
+    printf '没有检测到可选择的网络接口。\n' >&2
+    pause_visual
+    return 0
+  fi
+
+  menu_items=()
+  for iface in "${detected_ifaces[@]}"; do
+    if cn_is_tunnel_interface "${iface}"; then
+      menu_items+=("${iface}（隧道接口）" "${iface}")
+    else
+      menu_items+=("${iface}" "${iface}")
+    fi
+  done
+  visual_multi_select \
+    "选择需要托管 DNAT 入站转发的接口" \
+    0 \
+    "$(join_by_delim " " "${CONFIG_FORWARD_IFACES[@]}")" \
+    "${menu_items[@]}"
+  [[ "${VISUAL_CANCELLED}" -eq 0 ]] || return 0
+  CONFIG_FORWARD_MODE="selected"
+  CONFIG_FORWARD_IFACES=("${VISUAL_SELECTED_VALUES[@]}")
+}
+
 config_editor_title() {
-  local codes_text asns_text ports_text global_ip_text port_exception_text
+  local codes_text asns_text ports_text global_ip_text port_exception_text forward_text
   if [[ "${#CONFIG_CODES[@]}" -gt 0 ]]; then
     codes_text="$(codes_summary "${CONFIG_CODES[@]}")"
   else
@@ -808,11 +900,13 @@ config_editor_title() {
   fi
   global_ip_text="$(rule_text_summary "${CONFIG_GLOBAL_IP_RULES}")"
   port_exception_text="$(rule_text_summary "${CONFIG_PORT_EXCEPTIONS}")"
+  forward_text="$(forward_scope_summary "${CONFIG_FORWARD_MODE}" "${CONFIG_FORWARD_IFACES[@]}")"
   cat <<EOF
 白名单配置主界面
 
 全局白名单：${codes_text}
 全局 ASN：${asns_text}
+托管范围：${forward_text}
 全局单 IP：${global_ip_text}
 端口白名单：${ports_text}
 端口 IP/ASN 例外：${port_exception_text}
@@ -834,6 +928,7 @@ show_config_visual() {
   else
     printf '全局 ASN：未配置\n' >&2
   fi
+  printf '托管范围：%s\n' "$(forward_scope_summary "${CONFIG_FORWARD_MODE}" "${CONFIG_FORWARD_IFACES[@]}")" >&2
   printf '全局单 IP 允许/屏蔽：%s\n' "${CONFIG_GLOBAL_IP_RULES:-未配置}" >&2
   if [[ "${#CONFIG_PORT_POLICIES[@]}" -gt 0 ]]; then
     printf '端口白名单：\n' >&2
@@ -847,6 +942,57 @@ show_config_visual() {
   printf '端口 IP/ASN 例外：%s\n' "${CONFIG_PORT_EXCEPTIONS:-未配置}" >&2
   printf '\n优先级：端口+单 IP > 端口+ASN > 端口白名单 > 全局单 IP > 全局白名单。\n' >&2
   pause_visual
+}
+
+port_rules_menu_visual() {
+  local title
+  while true; do
+    if ((${#CONFIG_PORT_POLICIES[@]} > 0)); then
+      title="端口白名单
+
+当前共 ${#CONFIG_PORT_POLICIES[@]} 条：$(join_by_semicolon "${CONFIG_PORT_POLICIES[@]}")"
+    else
+      title="端口白名单
+
+当前未配置；未单独配置的端口使用全局白名单。"
+    fi
+    visual_single_select \
+      "${title}" \
+      "新增端口白名单" "add" \
+      "修改端口白名单" "edit" \
+      "删除端口白名单" "delete" \
+      "手动编辑全部端口白名单" "manual" \
+      "返回主菜单" "back"
+    case "${VISUAL_SELECTED_VALUE}" in
+      add) add_port_policy_visual ;;
+      edit) edit_port_policy_visual ;;
+      delete) delete_port_policy_visual ;;
+      manual) manual_edit_port_policies_visual ;;
+      back) return 0 ;;
+    esac
+  done
+}
+
+advanced_rules_menu_visual() {
+  while true; do
+    visual_single_select \
+      "高级允许/屏蔽规则
+
+全局单 IP：$(rule_text_summary "${CONFIG_GLOBAL_IP_RULES}")
+端口 IP/ASN 例外：$(rule_text_summary "${CONFIG_PORT_EXCEPTIONS}")
+
+端口例外优先级最高，请谨慎配置。" \
+      "编辑全局单 IP 允许/屏蔽" "global_ip" \
+      "编辑端口 IP/ASN 例外（最高优先级）" "port_exceptions" \
+      "查看完整配置和优先级" "view" \
+      "返回主菜单" "back"
+    case "${VISUAL_SELECTED_VALUE}" in
+      global_ip) edit_global_ip_rules_visual ;;
+      port_exceptions) edit_port_exceptions_visual ;;
+      view) show_config_visual ;;
+      back) return 0 ;;
+    esac
+  done
 }
 
 confirm_clear_rules_visual() {
@@ -876,22 +1022,24 @@ update_region_data_visual() {
 }
 
 load_saved_config_into_editor() {
-  [[ -r "${CN_CONFIG_FILE}" ]] || return 0
-
   local item saved_ports
   CONFIG_GLOBAL_IP_RULES=""
   CONFIG_PORT_EXCEPTIONS=""
+  CONFIG_FORWARD_MODE="${CN_FORWARD_MODE_DEFAULT:-all}"
+  CONFIG_FORWARD_IFACES=()
   CONFIG_CODES=()
+  CONFIG_ASNS=()
+  CONFIG_PORT_POLICIES=()
+  [[ -r "${CN_CONFIG_FILE}" ]] || return 0
+
   while IFS= read -r item; do
     [[ -n "${item}" ]] && CONFIG_CODES+=("${item}")
   done < <(cn_load_config_codes 2>/dev/null || true)
 
-  CONFIG_ASNS=()
   while IFS= read -r item; do
     [[ -n "${item}" ]] && CONFIG_ASNS+=("${item}")
   done < <(cn_load_config_asns 2>/dev/null || true)
 
-  CONFIG_PORT_POLICIES=()
   saved_ports="$(cn_load_config_port_policies 2>/dev/null || true)"
   if [[ -n "$(cn_trim "${saved_ports}")" ]]; then
     if ! set_config_port_policies_from_text "${saved_ports}" 2>/dev/null; then
@@ -900,6 +1048,56 @@ load_saved_config_into_editor() {
   fi
   CONFIG_GLOBAL_IP_RULES="$(cn_load_config_global_ip_rules 2>/dev/null || true)"
   CONFIG_PORT_EXCEPTIONS="$(cn_load_config_port_exceptions 2>/dev/null || true)"
+  CONFIG_FORWARD_MODE="$(cn_load_config_forward_mode 2>/dev/null || printf 'all\n')"
+  while IFS= read -r item; do
+    [[ -n "${item}" ]] && CONFIG_FORWARD_IFACES+=("${item}")
+  done < <(cn_load_config_forward_ifaces 2>/dev/null || true)
+}
+
+maintenance_menu_visual() {
+  local dry_run="$1"
+  while true; do
+    if [[ "${dry_run}" == "1" ]]; then
+      visual_single_select \
+        "维护工具" \
+        "重新载入已保存配置" "reload" \
+        "同步最新预制 IP 数据" "update_data" \
+        "返回主菜单" "back"
+    else
+      visual_single_select \
+        "维护工具" \
+        "重新载入已保存配置" "reload" \
+        "同步最新预制 IP 数据" "update_data" \
+        "清理已应用规则和开机配置" "clear_applied" \
+        "返回主菜单" "back"
+    fi
+    case "${VISUAL_SELECTED_VALUE}" in
+      reload)
+        if [[ ! -r "${CN_CONFIG_FILE}" ]]; then
+          printf '当前没有已保存配置：%s\n' "${CN_CONFIG_FILE}" >&2
+          pause_visual
+          continue
+        fi
+        visual_single_select \
+          "重新载入已保存配置会放弃当前未应用的草案。" \
+          "取消" "no" \
+          "确认重新载入" "yes"
+        if [[ "${VISUAL_SELECTED_VALUE}" == "yes" ]]; then
+          load_saved_config_into_editor
+          printf '已重新载入保存配置。\n' >&2
+          pause_visual
+        fi
+        ;;
+      update_data) update_region_data_visual ;;
+      clear_applied)
+        if confirm_clear_rules_visual; then
+          clear_rules
+          exit 0
+        fi
+        ;;
+      back) return 0 ;;
+    esac
+  done
 }
 
 interactive_config_editor() {
@@ -909,41 +1107,28 @@ interactive_config_editor() {
   CONFIG_PORT_POLICIES=()
   CONFIG_GLOBAL_IP_RULES=""
   CONFIG_PORT_EXCEPTIONS=""
+  CONFIG_FORWARD_MODE="${CN_FORWARD_MODE_DEFAULT:-all}"
+  CONFIG_FORWARD_IFACES=()
   load_saved_config_into_editor
 
-  local title
+  local done_label title
   while true; do
     title="$(config_editor_title)"
     if [[ "${dry_run}" == "1" ]]; then
-      visual_single_select \
-        "${title}" \
-        "编辑全局白名单（省份/全国）" "edit_global" \
-        "编辑全局 ASN 白名单" "edit_asn" \
-        "编辑全局单 IP 允许/屏蔽" "edit_global_ip" \
-        "新增端口白名单" "add_port" \
-        "修改端口白名单" "edit_port" \
-        "删除端口白名单" "delete_port" \
-        "手动编辑全部端口白名单" "manual_ports" \
-        "编辑端口 IP/ASN 例外（最高优先级）" "edit_port_exceptions" \
-        "查看当前配置" "view" \
-        "同步最新预制 IP 数据" "update_data" \
-        "完成并继续" "done"
+      done_label="完成配置并预览规则"
     else
-      visual_single_select \
-        "${title}" \
-        "编辑全局白名单（省份/全国）" "edit_global" \
-        "编辑全局 ASN 白名单" "edit_asn" \
-        "编辑全局单 IP 允许/屏蔽" "edit_global_ip" \
-        "新增端口白名单" "add_port" \
-        "修改端口白名单" "edit_port" \
-        "删除端口白名单" "delete_port" \
-        "手动编辑全部端口白名单" "manual_ports" \
-        "编辑端口 IP/ASN 例外（最高优先级）" "edit_port_exceptions" \
-        "查看当前配置" "view" \
-        "同步最新预制 IP 数据" "update_data" \
-        "清理已应用规则和开机配置" "clear_applied" \
-        "完成并继续" "done"
+      done_label="完成配置并进入应用确认"
     fi
+    visual_single_select \
+      "${title}" \
+      "编辑默认白名单（全国/家宽/省份）" "edit_global" \
+      "编辑 ASN 白名单（常用预设/自定义）" "edit_asn" \
+      "编辑入站托管范围" "edit_forward" \
+      "管理端口白名单" "ports" \
+      "管理高级允许/屏蔽规则" "advanced" \
+      "查看当前完整配置" "view" \
+      "维护工具" "maintenance" \
+      "${done_label}" "done"
     case "${VISUAL_SELECTED_VALUE}" in
       edit_global)
         edit_global_codes_visual
@@ -951,36 +1136,13 @@ interactive_config_editor() {
       edit_asn)
         edit_global_asns_visual
         ;;
-      edit_global_ip)
-        edit_global_ip_rules_visual
-        ;;
-      add_port)
-        add_port_policy_visual
-        ;;
-      edit_port)
-        edit_port_policy_visual
-        ;;
-      delete_port)
-        delete_port_policy_visual
-        ;;
-      manual_ports)
-        manual_edit_port_policies_visual
-        ;;
-      edit_port_exceptions)
-        edit_port_exceptions_visual
-        ;;
+      edit_forward) edit_forward_scope_visual ;;
+      ports) port_rules_menu_visual ;;
+      advanced) advanced_rules_menu_visual ;;
       view)
         show_config_visual
         ;;
-      update_data)
-        update_region_data_visual
-        ;;
-      clear_applied)
-        if confirm_clear_rules_visual; then
-          clear_rules
-          exit 0
-        fi
-        ;;
+      maintenance) maintenance_menu_visual "${dry_run}" ;;
       done)
         if [[ "${#CONFIG_CODES[@]}" -eq 0 ]]; then
           printf '请先配置全局白名单，至少选择家宽、一个省份或全国。\n' >&2
@@ -999,11 +1161,15 @@ interactive_config_editor() {
         fi
         SELECTED_GLOBAL_IP_RULES="${CONFIG_GLOBAL_IP_RULES}"
         SELECTED_PORT_EXCEPTIONS="${CONFIG_PORT_EXCEPTIONS}"
+        SELECTED_FORWARD_MODE="${CONFIG_FORWARD_MODE}"
+        SELECTED_FORWARD_IFACES=("${CONFIG_FORWARD_IFACES[@]}")
         return
         ;;
     esac
   done
 }
+
+# ---------- Forward scope, confirmations and execution ----------
 
 append_unique_forward_iface() {
   local candidate="$1"
@@ -1060,13 +1226,6 @@ describe_forward_selection() {
   esac
 }
 
-copy_selected_forward_ifaces() {
-  selected_forward_ifaces=()
-  if ((${#SELECTED_FORWARD_IFACES[@]} > 0)); then
-    selected_forward_ifaces=("${SELECTED_FORWARD_IFACES[@]}")
-  fi
-}
-
 confirm_client_ip() {
   local client_ip="$1"
   if [[ -z "${client_ip}" ]]; then
@@ -1092,10 +1251,15 @@ confirm_client_ip() {
 }
 
 confirm_apply_rules() {
+  local summary="${1:-}"
   echo "即将应用规则：未命中白名单的所有入站端口都会被拒绝。"
   if visual_menu_available; then
     visual_single_select \
-      "确认应用防火墙规则" \
+      "确认应用防火墙规则
+
+${summary}
+
+未命中白名单的新入站连接将被拒绝。" \
       "取消，不应用规则" "no" \
       "应用规则" "yes"
     [[ "${VISUAL_SELECTED_VALUE}" == "yes" ]]
@@ -1174,13 +1338,15 @@ run_apply_or_dry_run() {
   local -a selected_asns
   local -a selected_forward_ifaces
   local selected_forward_mode selected_forward_ifaces_text selected_asns_text selected_port_policies
-  local selected_global_ip_rules selected_port_exceptions
+  local final_summary selected_global_ip_rules selected_port_exceptions
   prepare_data_for_mode "${update_mode}"
   SELECTED_CODES=()
   SELECTED_ASNS=()
   SELECTED_PORT_POLICIES=""
   SELECTED_GLOBAL_IP_RULES=""
   SELECTED_PORT_EXCEPTIONS=""
+  SELECTED_FORWARD_MODE=""
+  SELECTED_FORWARD_IFACES=()
   if visual_menu_available; then
     interactive_config_editor "${dry_run}"
   else
@@ -1189,6 +1355,7 @@ run_apply_or_dry_run() {
     interactive_select_port_policies
     interactive_select_global_ip_rules
     interactive_select_port_exceptions
+    interactive_select_forward_interfaces
   fi
 
   selected_codes=()
@@ -1212,9 +1379,11 @@ run_apply_or_dry_run() {
   selected_port_exceptions="${SELECTED_PORT_EXCEPTIONS}"
   CN_GLOBAL_IP_RULES="${selected_global_ip_rules}"
   CN_PORT_EXCEPTIONS="${selected_port_exceptions}"
-  interactive_select_forward_interfaces
   selected_forward_mode="${SELECTED_FORWARD_MODE}"
-  copy_selected_forward_ifaces
+  selected_forward_ifaces=()
+  if ((${#SELECTED_FORWARD_IFACES[@]} > 0)); then
+    selected_forward_ifaces=("${SELECTED_FORWARD_IFACES[@]}")
+  fi
   selected_forward_ifaces_text=""
   if ((${#selected_forward_ifaces[@]} > 0)); then
     selected_forward_ifaces_text="${selected_forward_ifaces[*]}"
@@ -1223,23 +1392,15 @@ run_apply_or_dry_run() {
   local client_ip
   client_ip="$(confirm_client_ip "$(cn_detect_ssh_client_ip)")"
 
-  echo
-  echo "将使用以下全局白名单代码：${selected_codes[*]}"
-  if [[ -n "${selected_asns_text}" ]]; then
-    echo "将额外加入 ASN 白名单：${selected_asns_text}"
-  fi
-  if [[ -n "${selected_port_policies}" ]]; then
-    echo "端口优先白名单：${selected_port_policies}"
-  fi
-  if [[ -n "${selected_global_ip_rules}" ]]; then
-    echo "全局单 IP 规则：${selected_global_ip_rules}"
-  fi
-  if [[ -n "${selected_port_exceptions}" ]]; then
-    echo "最高优先级端口 IP/ASN 例外：${selected_port_exceptions}"
-  fi
-  describe_forward_selection "${selected_forward_mode}" "${selected_forward_ifaces_text}"
-  echo "防火墙后端：$(cn_effective_firewall_backend)"
-  echo
+  final_summary="默认白名单：$(codes_detail "${selected_codes[@]}")
+ASN 白名单：${selected_asns_text:-未配置}
+托管范围：$(forward_scope_summary "${selected_forward_mode}" "${selected_forward_ifaces[@]}")
+端口白名单：${selected_port_policies:-未配置}
+全局单 IP：${selected_global_ip_rules:-未配置}
+端口 IP/ASN 例外：${selected_port_exceptions:-未配置}
+SSH 临时白名单：${client_ip:-未加入}
+防火墙后端：$(cn_effective_firewall_backend)"
+  printf '\n配置预览\n\n%s\n\n' "${final_summary}"
 
   if [[ "${dry_run}" == "1" ]]; then
     cn_render_apply_commands "${client_ip}" "${selected_forward_mode}" "${selected_forward_ifaces_text}" "${selected_asns_text}" "${selected_port_policies}" "${selected_codes[@]}"
@@ -1248,7 +1409,7 @@ run_apply_or_dry_run() {
 
   cn_require_root
   cn_require_commands
-  if ! confirm_apply_rules; then
+  if ! confirm_apply_rules "${final_summary}"; then
     echo "已取消。"
     exit 0
   fi

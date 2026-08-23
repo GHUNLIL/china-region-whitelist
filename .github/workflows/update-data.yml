@@ -33,7 +33,7 @@ jobs:
       - name: Validate
         run: |
           python -m unittest discover -s tests -v
-          bash -n install.sh tools/firewall_lib.sh tools/prepare_home_broadband_data.sh
+          bash -n install.sh tools/ui_lib.sh tools/firewall_lib.sh tools/prepare_home_broadband_data.sh
       - name: Commit changes
         run: |
           if git diff --quiet; then

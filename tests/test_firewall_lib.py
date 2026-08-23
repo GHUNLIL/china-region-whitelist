@@ -12,6 +12,7 @@ FIXTURES = ROOT / "tests" / "fixtures"
 TOOL = ROOT / "tools" / "region_tool.py"
 INSTALL_SH = ROOT / "install.sh"
 FIREWALL_LIB = ROOT / "tools" / "firewall_lib.sh"
+UI_LIB = ROOT / "tools" / "ui_lib.sh"
 BOOTSTRAP_SH = ROOT / "bootstrap.sh"
 
 
@@ -218,6 +219,7 @@ class FirewallLibTests(unittest.TestCase):
 
     def test_install_script_supports_update_and_restore_modes(self):
         script = INSTALL_SH.read_text(encoding="utf-8")
+        ui_script = UI_LIB.read_text(encoding="utf-8")
 
         self.assertIn("update-data", script)
         self.assertIn("restore", script)
@@ -230,6 +232,7 @@ class FirewallLibTests(unittest.TestCase):
         self.assertIn("interactive_select_port_policies", script)
         self.assertIn("visual_multi_select", script)
         self.assertIn("visual_single_select", script)
+        self.assertIn('source "${ROOT}/tools/ui_lib.sh"', script)
         self.assertIn("interactive_config_editor", script)
         self.assertIn("load_saved_config_into_editor", script)
         self.assertIn("cn_load_config_codes", script)
@@ -249,19 +252,74 @@ class FirewallLibTests(unittest.TestCase):
         self.assertIn("删除端口白名单", script)
         self.assertIn("端口+单 IP > 端口+ASN > 端口白名单 > 全局单 IP > 全局白名单", script)
         self.assertIn("所有端口规则同时支持 TCP、UDP", script)
-        self.assertIn("上/下键移动，空格勾选，回车确认", script)
+        self.assertIn("上/下键移动，空格勾选，回车保存", ui_script)
+        self.assertIn("Esc/Q 取消", ui_script)
         self.assertIn("清理已应用规则和开机配置", script)
         self.assertIn("confirm_clear_rules_visual", script)
         self.assertIn("update-asn", script)
         self.assertNotIn("请选择 TUN/转发接口托管方式", script)
         self.assertNotIn("cn_resolve_city", script)
 
+    def test_visual_editor_groups_options_and_preserves_saved_state(self):
+        script = INSTALL_SH.read_text(encoding="utf-8")
+
+        for expected in (
+            "编辑默认白名单（全国/家宽/省份）",
+            "编辑 ASN 白名单（常用预设/自定义）",
+            "编辑入站托管范围",
+            "管理端口白名单",
+            "管理高级允许/屏蔽规则",
+            "维护工具",
+            "重新载入已保存配置",
+        ):
+            self.assertIn(expected, script)
+        self.assertIn('interactive_select_codes "${CONFIG_CODES[@]}"', script)
+        self.assertIn('interactive_select_asns "${CONFIG_ASNS[@]}"', script)
+        self.assertIn('interactive_select_global_ip_rules "${CONFIG_GLOBAL_IP_RULES}"', script)
+        self.assertIn('build_port_policy_visual "${CONFIG_PORT_POLICIES[$index]}"', script)
+
+    def test_visual_helpers_restore_preselected_values_and_default_cursor(self):
+        command = (
+            f"source {UI_LIB}; "
+            "visual_clear_screen() { :; }; visual_read_key() { printf ''; }; "
+            "visual_multi_select 'test' 1 'b' 'A' 'a' 'B' 'b'; "
+            "printf '%s|' \"${VISUAL_SELECTED_VALUES[*]}\"; "
+            "VISUAL_DEFAULT_VALUE=b; visual_single_select 'test' 'A' 'a' 'B' 'b'; "
+            "printf '%s\\n' \"${VISUAL_SELECTED_VALUE}\""
+        )
+        result = subprocess.run(
+            ["bash", "-c", command],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "b|b")
+
+    def test_visual_multi_select_cancel_does_not_return_partial_values(self):
+        command = (
+            f"source {UI_LIB}; "
+            "visual_clear_screen() { :; }; visual_read_key() { printf q; }; "
+            "visual_multi_select 'test' 1 'b' 'A' 'a' 'B' 'b'; "
+            "printf '%s|%s\\n' \"${VISUAL_CANCELLED}\" \"${VISUAL_SELECTED_VALUES[*]}\""
+        )
+        result = subprocess.run(
+            ["bash", "-c", command],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "1|")
+
     def test_install_script_offers_common_asn_presets_and_manual_input(self):
         script = INSTALL_SH.read_text(encoding="utf-8")
         presets = (ROOT / "data" / "asn" / "presets.tsv").read_text(encoding="utf-8")
 
         self.assertIn("load_common_asn_menu_options", script)
-        self.assertIn("常用 ASN 白名单（可多选，也可留空）", script)
+        self.assertIn("ASN 白名单（可多选；已配置项会自动勾选）", script)
         self.assertIn("手动输入其他 ASN", script)
         for expected in (
             "AS906\tDMIT\tDMIT Cloud Services",
@@ -312,6 +370,88 @@ class FirewallLibTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), "AS906 AS3462 AS14061")
+
+    def test_global_ip_editor_keeps_existing_rules_when_saved_without_changes(self):
+        command = (
+            f"source {INSTALL_SH}; "
+            "CN_VISUAL_MENU=0; CN_READ_FROM_STDIN=1; "
+            "interactive_select_global_ip_rules 'allow:198.51.100.8,deny:198.51.100.9'; "
+            "printf '%s\\n' \"${SELECTED_GLOBAL_IP_RULES}\""
+        )
+        result = subprocess.run(
+            ["bash", "-c", command],
+            input="3\n",
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "allow:198.51.100.8,deny:198.51.100.9")
+
+    def test_global_ip_editor_can_delete_one_existing_rule(self):
+        command = (
+            f"source {INSTALL_SH}; "
+            "CN_VISUAL_MENU=0; CN_READ_FROM_STDIN=1; "
+            "interactive_select_global_ip_rules 'allow:198.51.100.8,deny:198.51.100.9'; "
+            "printf '%s\\n' \"${SELECTED_GLOBAL_IP_RULES}\""
+        )
+        result = subprocess.run(
+            ["bash", "-c", command],
+            input="5\n1\n3\n",
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "deny:198.51.100.9")
+
+    def test_saved_editor_state_includes_forward_scope(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_file = Path(temp_dir) / "china-region-whitelist.conf"
+            config_file.write_text(
+                'CN_CODES="HOME"\n'
+                'CN_ASNS="AS64500"\n'
+                'CN_PORT_POLICIES="22=HOME"\n'
+                'CN_GLOBAL_IP_RULES="allow:198.51.100.8"\n'
+                'CN_PORT_EXCEPTIONS="443=deny:AS64501"\n'
+                'CN_FORWARD_MODE="selected"\n'
+                'CN_FORWARD_IFACES="tun0 wg0"\n',
+                encoding="utf-8",
+            )
+            command = (
+                f"source {INSTALL_SH}; CN_CONFIG_FILE={config_file}; "
+                "load_saved_config_into_editor; "
+                "printf '%s|%s|%s|%s\\n' \"${CONFIG_CODES[*]}\" \"${CONFIG_ASNS[*]}\" "
+                '"${CONFIG_FORWARD_MODE}" "${CONFIG_FORWARD_IFACES[*]}"'
+            )
+            result = subprocess.run(
+                ["bash", "-c", command],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "HOME|AS64500|selected|tun0 wg0")
+
+    def test_port_policy_editor_loads_existing_values(self):
+        command = (
+            f"source {INSTALL_SH}; "
+            "load_port_policy_editor_state '22=全国,上海市,AS64500,198.51.100.0/24'; "
+            "printf '%s|%s|%s\\n' \"${PORT_POLICY_PORT}\" "
+            '"${PORT_POLICY_DOMESTIC_SELECTORS[*]}" "${PORT_POLICY_EXTRA_SELECTORS[*]}"'
+        )
+        result = subprocess.run(
+            ["bash", "-c", command],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "22|全国 上海市|AS64500 198.51.100.0/24")
 
     def test_firewall_lib_configures_systemd_persistence(self):
         script = FIREWALL_LIB.read_text(encoding="utf-8")

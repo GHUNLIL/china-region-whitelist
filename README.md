@@ -12,6 +12,7 @@
 
 - `bootstrap.sh`：默认的一键拉取入口，会下载完整项目并执行 `install.sh`
 - `install.sh`：服务器上运行的一键脚本
+- `tools/ui_lib.sh`：键盘菜单、输入、返回/取消和多选状态回显
 - `data/regions.json`：省份索引
 - `data/regions.tsv`：服务器 Bash 运行时读取的省份索引
 - `data/country/CN.txt`：APNIC 国家级中国大陆 IPv4 段，用于“全国/CN”
@@ -58,18 +59,20 @@ cd china-region-whitelist
 sudo bash install.sh apply
 ```
 
-脚本默认进入键盘配置主界面：上/下键移动，空格勾选或取消，回车确认。如果已经保存过配置，主界面会先载入 `/etc/china-region-whitelist.conf` 作为当前草案，并提供这些操作：
+脚本默认进入分组后的键盘配置主界面。上/下键移动，空格勾选或取消，回车保存；多选页可以按 `A` 全选、`C` 清空、`Esc` 或 `Q` 取消。菜单上下移动支持首尾循环。
 
-- 编辑全局白名单：勾选 `全国（中国大陆 CN）`、`三大运营商公众接入网（近似普通家宽）`，或按省/自治区/直辖市逐个勾选
-- 编辑全局 ASN 白名单：可多选 DMIT、AWS、HiNet、Nearoute、So-net、SoftBank 等内置项，也可手动补充其他 ASN
-- 编辑全局单 IP 允许/屏蔽：例如 `allow:1.2.3.4,deny:5.6.7.8`
-- 新增端口白名单：输入单端口或端口范围，再勾选这个端口允许的省份，也可以补充 ASN/IP/CIDR
-- 修改端口白名单：选择已有端口策略后重新编辑
-- 删除端口白名单：选择已有端口策略后删除
-- 手动编辑全部端口白名单：直接输入完整规则文本
-- 编辑端口 IP/ASN 例外：例如 `22=allow:1.2.3.4,deny:AS4809`，这是最高优先级
-- 同步最新预制 IP 数据：从 GitHub 拉取仓库已预制好的 `data/` 到 `/var/lib/china-region-whitelist/data`，包含全国、省份和预制 ASN，不需要 Python
-- 清理已应用规则和开机配置：删除本脚本创建的防火墙规则、保存配置和 systemd 开机恢复
+主界面提供 8 个入口：
+
+1. 编辑默认白名单：勾选 `全国（中国大陆 CN）`、`三大运营商公众接入网（近似普通家宽）`，或具体省/自治区/直辖市。
+2. 编辑 ASN 白名单：多选 DMIT、AWS、HiNet、Nearoute、So-net、SoftBank 等内置项，并可加入自定义 ASN。
+3. 编辑入站托管范围：选择仅本机服务、所有 DNAT 入站转发，或指定网络接口的 DNAT 转发。
+4. 管理端口白名单：在子菜单中新增、修改、确认删除或手动编辑完整策略。
+5. 管理高级允许/屏蔽规则：配置全局单 IP 和最高优先级的端口 IP/ASN 例外。
+6. 查看当前完整配置和规则优先级。
+7. 维护工具：重新载入已保存配置、同步预制数据，或在正式应用模式下清理规则。
+8. 完成配置并预览/进入应用确认。
+
+如果 `/etc/china-region-whitelist.conf` 已存在，脚本会把已保存的省份、ASN、端口规则、IP 例外和转发接口载入草案。再次进入编辑页时原有选项会自动勾选；直接返回或取消不会清空旧配置。端口策略修改会带入旧端口和选择，直接回车保留当前值，输入 `-` 才会明确清空可选字段。
 
 规则优先级从高到低如下：
 
@@ -137,13 +140,13 @@ allow:1.2.3.4,deny:5.6.7.8
 
 每个端口只写一次，并把该端口的所有例外合并在同一条中。这些规则同时生成 TCP、UDP 规则；对 DNAT/端口转发会匹配连接的原始目标端口。
 
-如果当前环境没有可用 TTY，脚本会自动退回文本输入模式。也可以设置 `CN_VISUAL_MENU=0` 关闭键盘菜单。
+如果当前环境没有可用 TTY，脚本会自动退回兼容的文本输入模式。也可以设置 `CN_VISUAL_MENU=0` 关闭键盘菜单。
 
 默认整机托管本机服务和 DNAT/端口转发类入站 `FORWARD` 流量，不托管 `OUTPUT`，也不会拦截普通出站转发。如果你的转发都由 [Sagit-chu/flvx](https://github.com/Sagit-chu/flvx) 的 nftables 模式管理，flvx 转发端口会自动受同一白名单保护。本脚本在 nft 后端下只创建 `table inet china_region_whitelist`，不会删除或重写 flvx 使用的 `table inet flvx`。
 
 nftables 本身没有“国家等于 CN”的内置匹配，国家/省份/ASN 白名单最终都需要转换成 IPv4 CIDR set。nft 后端会用单次 `nft -f` 批量加载整张表，并在写入前去掉已被大网段覆盖的小网段，避免逐条 `nft add element` 造成的慢速导入和 interval overlap。
 
-高级用法：如果只想限制本机服务、不托管 DNAT 入站转发，可以设置 `CN_FORWARD_MODE_DEFAULT=none`；如果只想托管指定接口上的 DNAT 入站转发，可以设置 `CN_FORWARD_MODE_DEFAULT=selected CN_FORWARD_IFACES_DEFAULT="tun0 wg0"`。
+键盘界面可以直接编辑入站托管范围。无 TTY 文本模式下，如果只想限制本机服务、不托管 DNAT 入站转发，可以设置 `CN_FORWARD_MODE_DEFAULT=none`；如果只想托管指定接口上的 DNAT 入站转发，可以设置 `CN_FORWARD_MODE_DEFAULT=selected CN_FORWARD_IFACES_DEFAULT="tun0 wg0"`。
 
 `apply` 成功后会保存选择到 `/etc/china-region-whitelist.conf`，并安装 `china-region-whitelist.service`。服务器重启后，systemd 会自动按保存的省份、ASN 和端口策略恢复规则；恢复时默认使用随包数据和本地 ASN 缓存，不依赖网络或 Python。
 
@@ -197,7 +200,7 @@ bash <(curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/GHUNLIL
 
 ```bash
 python3 -m unittest discover -s tests -v
-bash -n install.sh tools/firewall_lib.sh
+bash -n install.sh tools/ui_lib.sh tools/firewall_lib.sh
 ```
 
 ## 安全提示
