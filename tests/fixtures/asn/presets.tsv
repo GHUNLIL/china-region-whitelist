@@ -1,0 +1,3 @@
+# ASN	provider	description
+AS64500	Fixture Cloud	Primary fixture network
+AS64501	Fixture Transit	Secondary fixture network

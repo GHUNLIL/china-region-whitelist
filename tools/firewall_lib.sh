@@ -7,6 +7,7 @@ DATA_DIR="${DATA_DIR:-${CN_ROOT}/data}"
 CN_REGIONS_TSV="${CN_REGIONS_TSV:-${DATA_DIR}/regions.tsv}"
 CN_COUNTRY_FILE="${CN_COUNTRY_FILE:-${DATA_DIR}/country/CN.txt}"
 CN_BUNDLED_ASN_DIR="${CN_BUNDLED_ASN_DIR:-${DATA_DIR}/asn}"
+CN_ASN_PRESETS_FILE="${CN_ASN_PRESETS_FILE:-${CN_BUNDLED_ASN_DIR}/presets.tsv}"
 CN_HOME_BROADBAND_FILE="${CN_HOME_BROADBAND_FILE:-${DATA_DIR}/carriers/home-broadband.txt}"
 CN_HOME_BROADBAND_ASNS_FILE="${CN_HOME_BROADBAND_ASNS_FILE:-${DATA_DIR}/carriers/home-broadband-asns.tsv}"
 CN_RUNTIME_DIR="${CN_RUNTIME_DIR:-/var/lib/china-region-whitelist}"
@@ -36,6 +37,7 @@ cn_set_data_dir() {
   CN_REGIONS_TSV="${DATA_DIR}/regions.tsv"
   CN_COUNTRY_FILE="${DATA_DIR}/country/CN.txt"
   CN_BUNDLED_ASN_DIR="${DATA_DIR}/asn"
+  CN_ASN_PRESETS_FILE="${CN_BUNDLED_ASN_DIR}/presets.tsv"
   CN_HOME_BROADBAND_FILE="${DATA_DIR}/carriers/home-broadband.txt"
   CN_HOME_BROADBAND_ASNS_FILE="${DATA_DIR}/carriers/home-broadband-asns.tsv"
 }
@@ -92,7 +94,7 @@ cn_effective_firewall_backend() {
 }
 
 cn_use_runtime_data_if_available() {
-  if [[ -s "${CN_RUNTIME_DIR}/data/regions.json" && -d "${CN_RUNTIME_DIR}/data/regions" && -s "${CN_RUNTIME_DIR}/data/country/CN.txt" && -s "${CN_RUNTIME_DIR}/data/carriers/home-broadband.txt" && -s "${CN_RUNTIME_DIR}/data/carriers/home-broadband-asns.tsv" ]]; then
+  if [[ -s "${CN_RUNTIME_DIR}/data/regions.json" && -d "${CN_RUNTIME_DIR}/data/regions" && -s "${CN_RUNTIME_DIR}/data/country/CN.txt" && -s "${CN_RUNTIME_DIR}/data/asn/presets.tsv" && -s "${CN_RUNTIME_DIR}/data/carriers/home-broadband.txt" && -s "${CN_RUNTIME_DIR}/data/carriers/home-broadband-asns.tsv" ]]; then
     cn_set_data_dir "${CN_RUNTIME_DIR}"
   fi
 }
@@ -118,7 +120,7 @@ cn_download_repo_archive() {
 
 cn_validate_prebuilt_data_dir() {
   local data_dir="$1"
-  if [[ ! -s "${data_dir}/regions.json" || ! -s "${data_dir}/regions.tsv" || ! -s "${data_dir}/country/CN.txt" || ! -d "${data_dir}/regions" || ! -s "${data_dir}/carriers/home-broadband.txt" || ! -s "${data_dir}/carriers/home-broadband-asns.tsv" ]]; then
+  if [[ ! -s "${data_dir}/regions.json" || ! -s "${data_dir}/regions.tsv" || ! -s "${data_dir}/country/CN.txt" || ! -d "${data_dir}/regions" || ! -s "${data_dir}/asn/presets.tsv" || ! -s "${data_dir}/carriers/home-broadband.txt" || ! -s "${data_dir}/carriers/home-broadband-asns.tsv" ]]; then
     echo "预制 IP 数据不完整：${data_dir}" >&2
     return 1
   fi
@@ -282,6 +284,14 @@ cn_list_home_broadband_asns() {
     return 1
   fi
   awk -F '\t' 'NF && $0 !~ /^#/ && $1 ~ /^AS[0-9]+$/ {print $1}' "${CN_HOME_BROADBAND_ASNS_FILE}"
+}
+
+cn_list_asn_presets() {
+  if [[ ! -r "${CN_ASN_PRESETS_FILE}" ]]; then
+    echo "缺少常用 ASN 预设清单：${CN_ASN_PRESETS_FILE}" >&2
+    return 1
+  fi
+  awk -F '\t' 'NF >= 2 && $0 !~ /^#/ && $1 ~ /^AS[0-9]+$/ {print $1 "\t" $2 "\t" $3}' "${CN_ASN_PRESETS_FILE}"
 }
 
 cn_province_name() {

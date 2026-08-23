@@ -43,6 +43,7 @@ def run_firewall_lib(command: str) -> subprocess.CompletedProcess[str]:
         f"CN_REGIONS_TSV={FIXTURES / 'regions.tsv'}; "
         f"CN_COUNTRY_FILE={FIXTURES / 'country' / 'CN.txt'}; "
         f"CN_BUNDLED_ASN_DIR={FIXTURES / 'asn'}; "
+        f"CN_ASN_PRESETS_FILE={FIXTURES / 'asn' / 'presets.tsv'}; "
         f"CN_ASN_CACHE_DIR={FIXTURES / 'asn'}; "
         f"CN_HOME_BROADBAND_FILE={FIXTURES / 'carriers' / 'home-broadband.txt'}; "
         f"CN_HOME_BROADBAND_ASNS_FILE={FIXTURES / 'carriers' / 'home-broadband-asns.tsv'}; "
@@ -254,6 +255,63 @@ class FirewallLibTests(unittest.TestCase):
         self.assertIn("update-asn", script)
         self.assertNotIn("请选择 TUN/转发接口托管方式", script)
         self.assertNotIn("cn_resolve_city", script)
+
+    def test_install_script_offers_common_asn_presets_and_manual_input(self):
+        script = INSTALL_SH.read_text(encoding="utf-8")
+        presets = (ROOT / "data" / "asn" / "presets.tsv").read_text(encoding="utf-8")
+
+        self.assertIn("load_common_asn_menu_options", script)
+        self.assertIn("常用 ASN 白名单（可多选，也可留空）", script)
+        self.assertIn("手动输入其他 ASN", script)
+        for expected in (
+            "AS906\tDMIT\tDMIT Cloud Services",
+            "AS16509\tAWS\tAmazon.com, Inc.",
+            "AS3462\tHiNet\tChunghwa Telecom Co., Ltd.",
+            "AS51847\tNearoute\tNearoute Limited",
+            "AS2527\tSo-net\tSony Network Communications Inc.",
+            "AS17676\tSoftBank\tSoftBank Corp.",
+        ):
+            self.assertIn(expected, presets)
+
+    def test_common_asn_presets_have_valid_bundled_ipv4_prefixes(self):
+        preset_file = ROOT / "data" / "asn" / "presets.tsv"
+        preset_asns = []
+        for line in preset_file.read_text(encoding="utf-8").splitlines():
+            if not line or line.startswith("#"):
+                continue
+            preset_asns.append(line.split("\t", 1)[0])
+
+        self.assertEqual(
+            preset_asns,
+            ["AS906", "AS16509", "AS3462", "AS51847", "AS2527", "AS17676"],
+        )
+        for asn in preset_asns:
+            prefix_file = ROOT / "data" / "asn" / f"{asn}.txt"
+            prefixes = [
+                line
+                for line in prefix_file.read_text(encoding="utf-8").splitlines()
+                if line and not line.startswith("#")
+            ]
+            self.assertTrue(prefixes, f"{asn} has no bundled prefixes")
+            for prefix in prefixes:
+                self.assertIsInstance(ipaddress.ip_network(prefix), ipaddress.IPv4Network)
+
+    def test_text_asn_selector_accepts_presets_and_manual_asns_without_duplicates(self):
+        command = (
+            f"source {INSTALL_SH}; "
+            "CN_VISUAL_MENU=0; CN_READ_FROM_STDIN=1; "
+            "interactive_select_asns; printf '%s\\n' \"${SELECTED_ASNS[*]}\""
+        )
+        result = subprocess.run(
+            ["bash", "-c", command],
+            input="1 3 AS14061 AS906\n",
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "AS906 AS3462 AS14061")
 
     def test_firewall_lib_configures_systemd_persistence(self):
         script = FIREWALL_LIB.read_text(encoding="utf-8")

@@ -16,7 +16,8 @@
 - `data/regions.tsv`：服务器 Bash 运行时读取的省份索引
 - `data/country/CN.txt`：APNIC 国家级中国大陆 IPv4 段，用于“全国/CN”
 - `data/regions/*.txt`：本地省级 CIDR 段
-- `data/asn/*.txt`：可选的预制 ASN IPv4 段，例如 `AS16509`
+- `data/asn/presets.tsv`：交互菜单内置的常用 ASN 快捷选项
+- `data/asn/*.txt`：预制 ASN IPv4 段，例如 `AS906`、`AS16509`
 - `data/carriers/home-broadband-asns.tsv`：保守筛选的电信、联通、移动公众接入网 ASN 清单
 - `data/carriers/home-broadband.txt`：由上述 ASN 生成的离线 IPv4 前缀包
 - `tools/region_tool.py`：开发/测试用的本地数据解析工具
@@ -60,7 +61,7 @@ sudo bash install.sh apply
 脚本默认进入键盘配置主界面：上/下键移动，空格勾选或取消，回车确认。如果已经保存过配置，主界面会先载入 `/etc/china-region-whitelist.conf` 作为当前草案，并提供这些操作：
 
 - 编辑全局白名单：勾选 `全国（中国大陆 CN）`、`三大运营商公众接入网（近似普通家宽）`，或按省/自治区/直辖市逐个勾选
-- 编辑全局 ASN 白名单：适合加入国外管理服务器所在云厂商 ASN，例如 `AS16509 AS14061`
+- 编辑全局 ASN 白名单：可多选 DMIT、AWS、HiNet、Nearoute、So-net、SoftBank 等内置项，也可手动补充其他 ASN
 - 编辑全局单 IP 允许/屏蔽：例如 `allow:1.2.3.4,deny:5.6.7.8`
 - 新增端口白名单：输入单端口或端口范围，再勾选这个端口允许的省份，也可以补充 ASN/IP/CIDR
 - 修改端口白名单：选择已有端口策略后重新编辑
@@ -82,6 +83,21 @@ sudo bash install.sh apply
 同一优先级若不同 ASN 前缀重叠，屏蔽先于允许。已经建立的连接仍由 `ESTABLISHED,RELATED` 保护；新连接按上述优先级判断。
 
 `全国` / `中国` / `CN` 会使用国家级 `data/country/CN.txt`，不会再展开成所有省份 CIDR；只有选择具体省份时才读取省级 CIDR 文件。
+
+## 常用 ASN 快捷选项
+
+“编辑全局 ASN 白名单”内置以下可多选项，同时保留手动输入：
+
+| 网络 | ASN | 登记名称 |
+| --- | --- | --- |
+| DMIT | `AS906` | DMIT Cloud Services |
+| AWS | `AS16509` | Amazon.com, Inc. |
+| HiNet | `AS3462` | Chunghwa Telecom Co., Ltd. |
+| Nearoute | `AS51847` | Nearoute Limited |
+| So-net | `AS2527` | Sony Network Communications Inc. |
+| SoftBank | `AS17676` | SoftBank Corp. |
+
+这些是常用主 ASN 快捷项，不代表相应品牌旗下的全部网络。目标 IP 如果由其他 ASN 宣告，仍需在“手动输入其他 ASN”中补充。内置项及其 IPv4 前缀由 `data/asn/presets.tsv` 和 GitHub Actions 定时更新，因此服务器使用随包数据时无需临时联网下载这些 ASN。
 
 ## 三大运营商普通家宽模式
 

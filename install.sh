@@ -226,6 +226,20 @@ load_province_menu_options() {
   done < <(cn_list_provinces)
 }
 
+load_common_asn_menu_options() {
+  COMMON_ASN_LABELS=()
+  COMMON_ASN_VALUES=()
+
+  local raw_asn provider description label
+  while IFS=$'\t' read -r raw_asn provider description; do
+    [[ -n "${raw_asn}" && -n "${provider}" ]] || continue
+    label="${provider} — ${raw_asn}"
+    [[ -n "${description}" ]] && label="${provider}（${description}）— ${raw_asn}"
+    COMMON_ASN_LABELS+=("${label}")
+    COMMON_ASN_VALUES+=("${raw_asn}")
+  done < <(cn_list_asn_presets)
+}
+
 append_unique_selected_code() {
   local candidate="$1"
   local existing
@@ -240,6 +254,19 @@ append_unique_selected_code() {
     done
   fi
   SELECTED_CODES+=("${candidate}")
+}
+
+append_unique_selected_asn() {
+  local raw_asn="$1"
+  local asn candidate existing
+  asn="$(cn_normalize_asn "${raw_asn}")" || return 1
+  candidate="AS${asn}"
+  if ((${#SELECTED_ASNS[@]} > 0)); then
+    for existing in "${SELECTED_ASNS[@]}"; do
+      [[ "${existing}" == "${candidate}" ]] && return 0
+    done
+  fi
+  SELECTED_ASNS+=("${candidate}")
 }
 
 join_by_delim() {
@@ -364,26 +391,44 @@ interactive_select_codes() {
 
 interactive_select_asns() {
   SELECTED_ASNS=()
+  load_common_asn_menu_options
+  local manual_input=0
+  local asn_input asn_selector i selected_value
+  local -a menu_items
   if visual_menu_available; then
-    visual_single_select \
-      "额外 ASN 白名单" \
-      "不添加 ASN 白名单" "skip" \
-      "输入 ASN 白名单" "input"
-    [[ "${VISUAL_SELECTED_VALUE}" == "skip" ]] && return 0
+    menu_items=()
+    for ((i = 0; i < ${#COMMON_ASN_LABELS[@]}; i++)); do
+      menu_items+=("${COMMON_ASN_LABELS[$i]}" "${COMMON_ASN_VALUES[$i]}")
+    done
+    menu_items+=("手动输入其他 ASN" "__MANUAL__")
+    visual_multi_select "常用 ASN 白名单（可多选，也可留空）" 1 "${menu_items[@]}"
+    for selected_value in "${VISUAL_SELECTED_VALUES[@]}"; do
+      if [[ "${selected_value}" == "__MANUAL__" ]]; then
+        manual_input=1
+      else
+        append_unique_selected_asn "${selected_value}"
+      fi
+    done
+    [[ "${manual_input}" -eq 0 ]] && return 0
+  else
+    echo >&2
+    echo "可选：常用 ASN 白名单，用于国外管理机或固定云厂商入口。" >&2
+    for ((i = 0; i < ${#COMMON_ASN_LABELS[@]}; i++)); do
+      printf '  %d) %s\n' "$((i + 1))" "${COMMON_ASN_LABELS[$i]}" >&2
+    done
+    echo "输入预设编号或 ASN，多个用空格/逗号分隔；例如：1 3 AS14061。留空则不添加。" >&2
   fi
 
-  echo >&2
-  echo "可选：额外 ASN 白名单，用于国外管理机或固定云厂商入口。" >&2
-  echo "例如：AS16509 AS14061。留空则不添加 ASN 白名单。" >&2
-
-  local asn_input asn_selector asn
-  asn_input="$(read_from_tty "额外 ASN（可空）: ")"
+  asn_input="$(read_from_tty "常用 ASN 编号或其他 ASN（可空）: ")"
   [[ -n "${asn_input}" ]] || return 0
 
   while IFS= read -r asn_selector; do
     [[ -n "${asn_selector}" ]] || continue
-    asn="$(cn_normalize_asn "${asn_selector}")"
-    SELECTED_ASNS+=("AS${asn}")
+    if [[ "${asn_selector}" =~ ^[0-9]+$ ]] && (( asn_selector >= 1 && asn_selector <= ${#COMMON_ASN_VALUES[@]} )); then
+      append_unique_selected_asn "${COMMON_ASN_VALUES[$((asn_selector - 1))]}"
+    else
+      append_unique_selected_asn "${asn_selector}"
+    fi
   done < <(split_user_list "${asn_input}")
 }
 

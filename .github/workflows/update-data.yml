@@ -21,9 +21,13 @@ jobs:
       - name: Refresh bundled ASN data
         run: |
           mkdir -p data/asn
-          curl -fsSL --connect-timeout 20 --retry 2 --retry-delay 1 \
-            https://raw.githubusercontent.com/ipverse/as-ip-blocks/master/as/16509/ipv4-aggregated.txt \
-            -o data/asn/AS16509.txt
+          while IFS=$'\t' read -r raw_asn _provider _description; do
+            [[ "${raw_asn}" =~ ^AS[0-9]+$ ]] || continue
+            asn="${raw_asn#AS}"
+            curl -fsSL --connect-timeout 20 --retry 2 --retry-delay 1 \
+              "https://raw.githubusercontent.com/ipverse/as-ip-blocks/master/as/${asn}/ipv4-aggregated.txt" \
+              -o "data/asn/${raw_asn}.txt"
+          done < data/asn/presets.tsv
       - name: Refresh three-carrier home broadband data
         run: bash tools/prepare_home_broadband_data.sh
       - name: Validate
