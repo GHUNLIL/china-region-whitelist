@@ -31,7 +31,8 @@ usage() {
   可配置全局单 IP 允许/屏蔽，以及最高优先级的单端口+IP/ASN 允许/屏蔽。
   所有端口规则同时支持 TCP、UDP 和 DNAT 原始目标端口。
   使用 flvx/nftables 转发时，建议保留默认 nft 后端；本脚本会使用独立 nft 表，不会改写 flvx 表。
-  apply/dry-run 默认使用仓库内置数据；加 --update 会从 GitHub 拉取最新预制数据，不需要 Python。
+  apply/dry-run 默认在进入菜单前拉取一次完整预制数据包；由 bootstrap 启动时直接使用它刚下载的完整包。
+  加 --offline 可完全跳过联网；加 --update 则要求本次同步必须成功。服务器端不需要 Python。
   建议先运行 dry-run，确认省份和命令后再 apply。
 EOF
 }
@@ -1313,22 +1314,32 @@ prepare_data_for_mode() {
   local mode="$1"
   case "${mode}" in
     required)
+      echo "启动预载：正在拉取完整预制数据包（全国、省份、家宽和全部内置 ASN）..." >&2
       cn_update_runtime_data
       ;;
     optional)
-      if ! cn_update_runtime_data; then
-        echo "同步 GitHub 预制数据失败，将使用本机已有数据继续。" >&2
-        cn_use_runtime_data_if_available
+      if [[ "${EUID}" -ne 0 ]]; then
+        echo "当前不是 root，跳过启动联网更新，使用随脚本提供的完整数据包。" >&2
+      else
+        echo "启动预载：正在拉取完整预制数据包（全国、省份、家宽和全部内置 ASN）..." >&2
+        if ! cn_update_runtime_data; then
+          echo "同步 GitHub 预制数据失败，将使用本机完整数据包继续。" >&2
+        fi
       fi
       ;;
     offline)
-      cn_use_runtime_data_if_available
+      if [[ "${CN_BOOTSTRAP_DATA_READY:-0}" != "1" ]]; then
+        cn_use_runtime_data_if_available || true
+      fi
       ;;
     *)
       echo "未知更新模式：${mode}" >&2
       exit 2
       ;;
   esac
+
+  cn_validate_prebuilt_data_dir "${DATA_DIR}"
+  echo "本地预制数据已就绪：地区、家宽及全部内置 ASN；菜单和应用阶段不再临时下载这些 ASN。" >&2
 }
 
 run_apply_or_dry_run() {
@@ -1559,14 +1570,18 @@ clear_rules() {
 
 main() {
   local command="${1:-apply}"
+  local startup_update_mode="optional"
   shift || true
+  if [[ "${CN_BOOTSTRAP_DATA_READY:-0}" == "1" ]]; then
+    startup_update_mode="offline"
+  fi
   case "${command}" in
     apply)
-      parse_update_mode offline "$@"
+      parse_update_mode "${startup_update_mode}" "$@"
       run_apply_or_dry_run 0 "${UPDATE_MODE}"
       ;;
     dry-run)
-      parse_update_mode offline "$@"
+      parse_update_mode "${startup_update_mode}" "$@"
       run_apply_or_dry_run 1 "${UPDATE_MODE}"
       ;;
     restore)

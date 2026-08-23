@@ -68,6 +68,9 @@ visual_clear_screen() {
 visual_read_key() {
   local key rest
   IFS= read -rsn1 key < /dev/tty || key=""
+  # Some SSH clients send Enter as carriage return instead of newline. Bash
+  # read strips newline but preserves carriage return, so normalize both forms.
+  [[ "${key}" == $'\r' ]] && key=""
   if [[ "${key}" == $'\x1b' ]]; then
     IFS= read -rsn2 -t 1 rest < /dev/tty || rest=""
     key+="${rest}"
@@ -156,10 +159,9 @@ visual_multi_select() {
         ;;
       q|Q|$'\x1b')
         VISUAL_CANCELLED=1
-        visual_clear_screen
         return 0
         ;;
-      "")
+      ""|$'\r')
         selected_count=0
         for ((i = 0; i < ${#checked[@]}; i++)); do
           [[ "${checked[$i]}" -eq 1 ]] && selected_count=$((selected_count + 1))
@@ -175,7 +177,6 @@ visual_multi_select() {
             VISUAL_SELECTED_LABELS+=("${labels[$i]}")
           fi
         done
-        visual_clear_screen
         return 0
         ;;
     esac
@@ -232,12 +233,10 @@ visual_single_select() {
       q|Q|$'\x1b')
         [[ -n "${cancel_value}" ]] || continue
         VISUAL_SELECTED_VALUE="${cancel_value}"
-        visual_clear_screen
         return 0
         ;;
-      ""|" ")
+      ""|" "|$'\r')
         VISUAL_SELECTED_VALUE="${values[$current]}"
-        visual_clear_screen
         return 0
         ;;
     esac

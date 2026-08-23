@@ -76,15 +76,20 @@ run_root_preserve_env() {
 
 download_archive() {
   local target="$1"
-  local proxy_candidates
+  local proxy_candidates archive_url
   proxy_candidates="${CN_GITHUB_PROXIES:-${GITHUB_PROXY} direct}"
   proxy_candidates="${proxy_candidates//,/ }"
+  archive_url="${ARCHIVE_URL}"
+  if [[ "${archive_url}" != *\?* ]]; then
+    archive_url+="?cn_cache_bust=$(date +%s)"
+  fi
 
   local proxy url
   for proxy in ${proxy_candidates}; do
-    url="$(proxy_url "${ARCHIVE_URL}" "${proxy}")"
-    echo "正在下载：${url}" >&2
-    if curl -fL --connect-timeout 20 --retry 2 --retry-delay 1 -o "${target}" "${url}"; then
+    url="$(proxy_url "${archive_url}" "${proxy}")"
+    echo "正在下载完整预制包（地区、家宽、内置 ASN）：${url}" >&2
+    if curl -fL --connect-timeout 8 --max-time 120 --retry 1 --retry-delay 1 \
+      -H 'Cache-Control: no-cache' -o "${target}" "${url}"; then
       return 0
     fi
     echo "下载失败，尝试下一个地址。" >&2
@@ -92,6 +97,35 @@ download_archive() {
 
   echo "无法下载项目，请检查网络或设置 CN_GITHUB_PROXY。" >&2
   return 1
+}
+
+validate_project_bundle() {
+  local source_dir="$1"
+  local data_dir="${source_dir}/data"
+  local required_path raw_asn _provider _description
+  for required_path in \
+    "${source_dir}/install.sh" \
+    "${source_dir}/tools/firewall_lib.sh" \
+    "${source_dir}/tools/ui_lib.sh" \
+    "${data_dir}/regions.json" \
+    "${data_dir}/regions.tsv" \
+    "${data_dir}/country/CN.txt" \
+    "${data_dir}/asn/presets.tsv" \
+    "${data_dir}/carriers/home-broadband.txt" \
+    "${data_dir}/carriers/home-broadband-asns.tsv"; do
+    if [[ ! -s "${required_path}" ]]; then
+      echo "下载的预制包不完整，缺少：${required_path#"${source_dir}/"}" >&2
+      return 1
+    fi
+  done
+
+  while IFS=$'\t' read -r raw_asn _provider _description; do
+    [[ "${raw_asn}" =~ ^AS[0-9]+$ ]] || continue
+    if [[ ! -s "${data_dir}/asn/${raw_asn}.txt" ]]; then
+      echo "下载的预制包缺少内置 ASN：data/asn/${raw_asn}.txt" >&2
+      return 1
+    fi
+  done < "${data_dir}/asn/presets.tsv"
 }
 
 install_project() {
@@ -129,14 +163,15 @@ main() {
   mkdir -p "${source_dir}"
   download_archive "${archive_path}"
   tar -xzf "${archive_path}" --strip-components=1 -C "${source_dir}"
+  validate_project_bundle "${source_dir}"
   install_project "${source_dir}"
 
   if [[ "$#" -eq 0 ]]; then
     set -- apply
   fi
 
-  echo "已安装到：${INSTALL_DIR}" >&2
-  run_root_preserve_env bash "${INSTALL_DIR}/install.sh" "$@"
+  echo "完整预制数据已下载并安装到：${INSTALL_DIR}" >&2
+  run_root_preserve_env env CN_BOOTSTRAP_DATA_READY=1 bash "${INSTALL_DIR}/install.sh" "$@"
 }
 
 main "$@"

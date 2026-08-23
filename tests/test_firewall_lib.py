@@ -3,6 +3,8 @@ import sys
 import unittest
 import importlib.util
 import ipaddress
+import os
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -313,6 +315,26 @@ class FirewallLibTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), "1|")
+
+    def test_visual_helpers_accept_carriage_return_as_enter(self):
+        command = (
+            f"source {UI_LIB}; "
+            "visual_clear_screen() { :; }; visual_read_key() { printf '\\r'; }; "
+            "visual_multi_select 'test' 1 'b' 'A' 'a' 'B' 'b'; "
+            "printf '%s|' \"${VISUAL_SELECTED_VALUES[*]}\"; "
+            "VISUAL_DEFAULT_VALUE=b; visual_single_select 'test' 'A' 'a' 'B' 'b'; "
+            "printf '%s\\n' \"${VISUAL_SELECTED_VALUE}\""
+        )
+        result = subprocess.run(
+            ["bash", "-c", command],
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=2,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "b|b")
 
     def test_install_script_offers_common_asn_presets_and_manual_input(self):
         script = INSTALL_SH.read_text(encoding="utf-8")
@@ -753,8 +775,72 @@ class FirewallLibTests(unittest.TestCase):
         self.assertIn("CN_ASN_BASE_URL", firewall_lib)
         self.assertIn("cn_proxy_url_if_github", firewall_lib)
         self.assertIn("CN_GITHUB_PROXY:-https://gh-proxy.com/", bootstrap)
+        self.assertIn("CN_GITHUB_PROXIES", bootstrap)
+        self.assertIn("--connect-timeout 8 --max-time 120", bootstrap)
+        self.assertIn("cn_cache_bust=", bootstrap)
         self.assertIn("https://gh-proxy.com/https://raw.githubusercontent.com", readme)
         self.assertIn("bash <(curl -fsSL", readme)
+
+    def test_startup_prefetches_once_and_bootstrap_reuses_downloaded_bundle(self):
+        install = INSTALL_SH.read_text(encoding="utf-8")
+        bootstrap = BOOTSTRAP_SH.read_text(encoding="utf-8")
+
+        self.assertIn('local startup_update_mode="optional"', install)
+        self.assertIn('CN_BOOTSTRAP_DATA_READY:-0', install)
+        self.assertIn("启动预载：正在拉取完整预制数据包", install)
+        self.assertIn("菜单和应用阶段不再临时下载这些 ASN", install)
+        self.assertIn("validate_project_bundle", bootstrap)
+        self.assertIn("CN_BOOTSTRAP_DATA_READY=1", bootstrap)
+
+    def test_prebuilt_data_validation_requires_every_preset_asn_file(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            data_dir = Path(temp_dir) / "data"
+            shutil.copytree(FIXTURES, data_dir)
+            valid = subprocess.run(
+                ["bash", "-c", f"source {FIREWALL_LIB}; cn_validate_prebuilt_data_dir {data_dir}"],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            (data_dir / "asn" / "AS64501.txt").unlink()
+            incomplete = subprocess.run(
+                ["bash", "-c", f"source {FIREWALL_LIB}; cn_validate_prebuilt_data_dir {data_dir}"],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+        self.assertEqual(valid.returncode, 0, valid.stderr)
+        self.assertNotEqual(incomplete.returncode, 0)
+        self.assertIn("AS64501.txt", incomplete.stderr)
+
+    def test_runtime_data_only_overrides_bundle_when_it_is_newer(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            bundled = root / "bundled"
+            runtime = root / "runtime" / "data"
+            shutil.copytree(FIXTURES, bundled)
+            shutil.copytree(FIXTURES, runtime)
+            bundled_index = bundled / "regions.json"
+            runtime_index = runtime / "regions.json"
+            os.utime(runtime_index, (1_700_000_000, 1_700_000_000))
+            os.utime(bundled_index, (1_800_000_000, 1_800_000_000))
+            command = (
+                f"source {FIREWALL_LIB}; DATA_DIR={bundled}; CN_RUNTIME_DIR={root / 'runtime'}; "
+                "cn_use_runtime_data_if_available || true; printf '%s\\n' \"${DATA_DIR}\""
+            )
+            stale = subprocess.run(
+                ["bash", "-c", command], text=True, capture_output=True, check=False
+            )
+            os.utime(runtime_index, (1_900_000_000, 1_900_000_000))
+            fresh = subprocess.run(
+                ["bash", "-c", command], text=True, capture_output=True, check=False
+            )
+
+        self.assertEqual(stale.returncode, 0, stale.stderr)
+        self.assertEqual(stale.stdout.strip(), str(bundled))
+        self.assertEqual(fresh.returncode, 0, fresh.stderr)
+        self.assertEqual(fresh.stdout.strip(), str(root / "runtime" / "data"))
 
     def test_bootstrap_cleanup_trap_is_set_u_safe(self):
         bootstrap = BOOTSTRAP_SH.read_text(encoding="utf-8")

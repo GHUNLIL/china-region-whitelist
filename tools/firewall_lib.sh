@@ -94,21 +94,29 @@ cn_effective_firewall_backend() {
 }
 
 cn_use_runtime_data_if_available() {
-  if [[ -s "${CN_RUNTIME_DIR}/data/regions.json" && -d "${CN_RUNTIME_DIR}/data/regions" && -s "${CN_RUNTIME_DIR}/data/country/CN.txt" && -s "${CN_RUNTIME_DIR}/data/asn/presets.tsv" && -s "${CN_RUNTIME_DIR}/data/carriers/home-broadband.txt" && -s "${CN_RUNTIME_DIR}/data/carriers/home-broadband-asns.tsv" ]]; then
+  if cn_validate_prebuilt_data_dir "${CN_RUNTIME_DIR}/data" >/dev/null 2>&1 \
+    && [[ "${CN_RUNTIME_DIR}/data/regions.json" -nt "${DATA_DIR}/regions.json" ]]; then
     cn_set_data_dir "${CN_RUNTIME_DIR}"
+    return 0
   fi
+  return 1
 }
 
 cn_download_repo_archive() {
   local target="$1"
-  local proxy_candidates proxy url
+  local proxy_candidates proxy url archive_url
   proxy_candidates="${CN_GITHUB_PROXIES:-${CN_GITHUB_PROXY} direct}"
   proxy_candidates="${proxy_candidates//,/ }"
+  archive_url="${CN_REPO_ARCHIVE_URL}"
+  if [[ "${archive_url}" != *\?* ]]; then
+    archive_url+="?cn_cache_bust=$(date +%s)"
+  fi
 
   for proxy in ${proxy_candidates}; do
-    url="$(cn_github_proxy_url_with_proxy "${CN_REPO_ARCHIVE_URL}" "${proxy}")"
+    url="$(cn_github_proxy_url_with_proxy "${archive_url}" "${proxy}")"
     echo "正在下载 GitHub 预制 IP 数据包：${url}" >&2
-    if curl -fL --connect-timeout 20 --retry 2 --retry-delay 1 -o "${target}" "${url}"; then
+    if curl -fL --connect-timeout 8 --max-time 120 --retry 1 --retry-delay 1 \
+      -H 'Cache-Control: no-cache' -o "${target}" "${url}"; then
       return 0
     fi
     echo "下载失败，尝试下一个地址。" >&2
@@ -124,6 +132,15 @@ cn_validate_prebuilt_data_dir() {
     echo "预制 IP 数据不完整：${data_dir}" >&2
     return 1
   fi
+
+  local raw_asn _provider _description
+  while IFS=$'\t' read -r raw_asn _provider _description; do
+    [[ "${raw_asn}" =~ ^AS[0-9]+$ ]] || continue
+    if [[ ! -s "${data_dir}/asn/${raw_asn}.txt" ]]; then
+      echo "预制 IP 数据缺少内置 ASN：${data_dir}/asn/${raw_asn}.txt" >&2
+      return 1
+    fi
+  done < "${data_dir}/asn/presets.tsv"
 }
 
 cn_update_runtime_data() {

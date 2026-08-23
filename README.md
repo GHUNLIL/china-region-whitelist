@@ -4,9 +4,9 @@
 
 脚本不管理 `OUTPUT` 出站流量，服务器向外连接不受限制；默认只托管本机 `INPUT` 和 DNAT/端口转发类入站 `FORWARD` 流量，因此本机服务和 flvx 这类 nftables 端口转发会走同一套整机白名单。
 
-仓库会通过 GitHub Actions 每小时同步一次上游 CIDR 数据，并把 APNIC 国家级 `CN` IPv4、省份索引和省级 CIDR 文件一起打进仓库。服务器运行 `apply` 或 `dry-run` 时默认直接使用随包数据，不需要安装 Python。
+仓库会通过 GitHub Actions 每小时同步一次上游 CIDR 数据，并把 APNIC 国家级 `CN` IPv4、省份索引、省级 CIDR、家宽和全部内置 ASN 文件一起打进仓库。服务器端不需要安装 Python。
 
-默认入口面向中国大陆服务器：一行 `bash <(curl ...)` 通过 GitHub 代理下载完整项目，拿到的就是仓库最近一次同步好的 IP 数据。
+默认入口面向中国大陆服务器：一行 `bash <(curl ...)` 会在打开配置菜单前，通过 GitHub 代理一次性下载并校验完整项目。进入菜单后，地区、家宽以及 DMIT、AWS、HiNet、Nearoute、So-net、SoftBank 等内置 ASN 都只读本地文件，不会在选择或应用阶段临时联网。
 
 ## 项目结构
 
@@ -49,7 +49,7 @@ bash <(curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/GHUNLIL
 
 正式应用后，脚本会先临时加载规则并等待 60 秒确认。请用新窗口测试 SSH/业务端口，确认可访问后输入 `YES`、`yes` 或 `y`，脚本才会保存配置并启用开机恢复；如果超时或未确认，会自动清理本次规则。可用 `CN_POST_APPLY_TIMEOUT=120` 调整等待时间，或用 `CN_POST_APPLY_CONFIRM=0` 关闭这个保护。
 
-`bootstrap.sh` 会把项目安装或更新到 `/opt/china-region-whitelist`，然后用 root 权限执行真正的 `install.sh`。如果当前不是 root，会自动调用 `sudo`。
+`bootstrap.sh` 会把项目安装或更新到 `/opt/china-region-whitelist`，逐项确认所有内置 ASN 文件齐全，然后用 root 权限执行真正的 `install.sh`。如果当前不是 root，会自动调用 `sudo`。下载默认先走 `gh-proxy.com`，失败后自动尝试直连，并带连接/总时长限制，不再无限等待。
 
 如需手动方式，也可以克隆仓库后运行：
 
@@ -58,6 +58,8 @@ git clone https://github.com/GHUNLIL/china-region-whitelist.git
 cd china-region-whitelist
 sudo bash install.sh apply
 ```
+
+直接运行已经安装的 `/opt/china-region-whitelist/install.sh apply` 时，脚本也会默认在进入菜单前尝试拉取一次完整预制数据包；同步失败则回退到校验通过的随包数据。`--offline` 模式只会在运行时数据完整且比随包数据更新时才优先使用它，避免旧缓存覆盖新安装包。若明确不希望联网，可加 `--offline`。
 
 脚本默认进入分组后的键盘配置主界面。上/下键移动，空格勾选或取消，回车保存；多选页可以按 `A` 全选、`C` 清空、`Esc` 或 `Q` 取消。菜单上下移动支持首尾循环。
 
@@ -100,7 +102,7 @@ sudo bash install.sh apply
 | So-net | `AS2527` | Sony Network Communications Inc. |
 | SoftBank | `AS17676` | SoftBank Corp. |
 
-这些是常用主 ASN 快捷项，不代表相应品牌旗下的全部网络。目标 IP 如果由其他 ASN 宣告，仍需在“手动输入其他 ASN”中补充。内置项及其 IPv4 前缀由 `data/asn/presets.tsv` 和 GitHub Actions 定时更新，因此服务器使用随包数据时无需临时联网下载这些 ASN。
+这些是常用主 ASN 快捷项，不代表相应品牌旗下的全部网络。目标 IP 如果由其他 ASN 宣告，仍需在“手动输入其他 ASN”中补充。内置项及其 IPv4 前缀由 `data/asn/presets.tsv` 和 GitHub Actions 定时更新；启动校验会要求表中的每个 ASN 都存在对应前缀文件，避免选完后才临时联网。
 
 ## 三大运营商普通家宽模式
 
@@ -209,9 +211,10 @@ bash -n install.sh tools/ui_lib.sh tools/firewall_lib.sh
 
 国家级 `CN` IPv4 数据来自 APNIC delegated stats，省级 CIDR 数据来自 `metowolf/iplist`，家宽 ASN 登记和用户规模参考 APNIC/APNIC Labs，ASN 前缀来自 `ipverse/as-ip-blocks`。这些数据由 GitHub Actions 生成后预制进仓库，服务器默认不需要 Python。已预制的 ASN 会优先从 `data/asn/` 读取；未预制的 ASN 才会从 `ipverse/as-ip-blocks` 拉取，默认同样会走 `https://gh-proxy.com/`。若服务器缺少 `nftables`、`iptables` 或 `ipset`，脚本会尝试使用系统默认软件源安装依赖；这一步可能访问发行版软件源。
 
-默认 GitHub 访问会经过 `https://gh-proxy.com/`。如果需要换代理或直连：
+默认 GitHub 访问会先经过 `https://gh-proxy.com/`，失败后尝试直连。可以用一个空格或逗号分隔的列表自定义依次尝试的代理，也可以只指定一个代理或直连：
 
 ```bash
+CN_GITHUB_PROXIES="https://proxy-a.example/ https://proxy-b.example/ direct" bash <(curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/GHUNLIL/china-region-whitelist/main/bootstrap.sh) apply
 CN_GITHUB_PROXY=https://your-proxy.example/ bash <(curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/GHUNLIL/china-region-whitelist/main/bootstrap.sh) apply
 CN_GITHUB_PROXY=direct bash <(curl -fsSL https://raw.githubusercontent.com/GHUNLIL/china-region-whitelist/main/bootstrap.sh) apply
 ```
