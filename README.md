@@ -6,7 +6,7 @@
 
 仓库会通过 GitHub Actions 每小时同步一次上游 CIDR 数据，并把 APNIC 国家级 `CN` IPv4、省份索引、省级 CIDR、家宽和全部内置 ASN 文件一起打进仓库。服务器端不需要安装 Python。
 
-默认入口面向中国大陆服务器：一行 `bash <(curl ...)` 会在打开配置菜单前，通过 GitHub 代理一次性下载并校验完整项目。进入菜单后，地区、家宽以及 DMIT、AWS、HiNet、Nearoute、So-net、SoftBank 等内置 ASN 都只读本地文件，不会在选择或应用阶段临时联网。
+默认入口面向中国大陆服务器：一行 `bash <(curl ...)` 会在打开配置菜单前，通过 GitHub 代理一次性下载并校验完整项目。进入菜单后，地区、家宽以及 DMIT、AWS、DDPS、HiNet、Nearoute、So-net、SoftBank 等内置 ASN 都只读本地文件，不会在选择或应用阶段临时联网。
 
 ## 项目结构
 
@@ -66,7 +66,7 @@ sudo bash install.sh apply
 主界面提供 8 个入口：
 
 1. 编辑默认白名单：勾选 `全国（中国大陆 CN）`、`三大运营商公众接入网（近似普通家宽）`，或具体省/自治区/直辖市。
-2. 编辑 ASN 白名单：多选 DMIT、AWS、HiNet、Nearoute、So-net、SoftBank 等内置项，并可加入自定义 ASN。
+2. 编辑 ASN 白名单：多选 DMIT、AWS、DDPS、HiNet、Nearoute、So-net、SoftBank 等内置项，并可加入自定义 ASN。
 3. 编辑入站托管范围：选择仅本机服务、所有 DNAT 入站转发，或指定网络接口的 DNAT 转发。
 4. 管理端口白名单：在子菜单中新增、修改、确认删除或手动编辑完整策略。
 5. 管理高级允许/屏蔽规则：配置全局单 IP 和最高优先级的端口 IP/ASN 例外。
@@ -97,6 +97,7 @@ sudo bash install.sh apply
 | --- | --- | --- |
 | DMIT | `AS906` | DMIT Cloud Services |
 | AWS | `AS16509` | Amazon.com, Inc. |
+| DDPS | `AS18526` | DDPS Networks, LLC |
 | HiNet | `AS3462` | Chunghwa Telecom Co., Ltd. |
 | Nearoute | `AS51847` | Nearoute Limited |
 | So-net | `AS2527` | Sony Network Communications Inc. |

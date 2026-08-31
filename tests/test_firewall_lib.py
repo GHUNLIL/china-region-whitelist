@@ -422,6 +422,7 @@ class FirewallLibTests(unittest.TestCase):
         for expected in (
             "AS906\tDMIT\tDMIT Cloud Services",
             "AS16509\tAWS\tAmazon.com, Inc.",
+            "AS18526\tDDPS\tDDPS Networks, LLC",
             "AS3462\tHiNet\tChunghwa Telecom Co., Ltd.",
             "AS51847\tNearoute\tNearoute Limited",
             "AS2527\tSo-net\tSony Network Communications Inc.",
@@ -439,7 +440,7 @@ class FirewallLibTests(unittest.TestCase):
 
         self.assertEqual(
             preset_asns,
-            ["AS906", "AS16509", "AS3462", "AS51847", "AS2527", "AS17676"],
+            ["AS906", "AS16509", "AS18526", "AS3462", "AS51847", "AS2527", "AS17676"],
         )
         for asn in preset_asns:
             prefix_file = ROOT / "data" / "asn" / f"{asn}.txt"
@@ -460,14 +461,14 @@ class FirewallLibTests(unittest.TestCase):
         )
         result = subprocess.run(
             ["bash", "-c", command],
-            input="1 3 AS14061 AS906\n",
+            input="1 3 4 AS14061 AS906\n",
             text=True,
             capture_output=True,
             check=False,
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.strip(), "AS906 AS3462 AS14061")
+        self.assertEqual(result.stdout.strip(), "AS906 AS18526 AS3462 AS14061")
 
     def test_global_ip_editor_keeps_existing_rules_when_saved_without_changes(self):
         command = (
