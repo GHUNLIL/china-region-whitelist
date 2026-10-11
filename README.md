@@ -24,6 +24,7 @@
 - `tools/region_tool.py`：开发/测试用的本地数据解析工具
 - `tools/firewall_lib.sh`：防火墙辅助函数
 - `tools/prepare_home_broadband_data.sh`：刷新三大运营商公众接入网前缀包
+- `tools/cidr_merge.py`：合并/排除 CIDR 列表并做覆盖量检查（仅数据生成时使用）
 - `tests/fixtures/asn/`：测试用 ASN 前缀夹具
 - `tests/`：不触碰真实防火墙的本地测试
 
@@ -89,6 +90,12 @@ sudo bash install.sh apply
 
 `全国` / `中国` / `CN` 会使用国家级 `data/country/CN.txt`，不会再展开成所有省份 CIDR；只有选择具体省份时才读取省级 CIDR 文件。
 
+## 数据准确性说明
+
+- 省级 CIDR 是 IP 地理定位结果，不是运营商登记信息。手机 4G/5G、部分家宽出口经常被定位到其他省份或只定位到“中国”，约 7% 的国内地址不属于任何省份文件。如果只勾选了具体省份，异地用户或移动网络用户很可能连不上；需要稳定访问时建议改选 `全国（中国大陆 CN）`，或额外勾选“三大运营商公众接入网”。
+- 定时更新会做覆盖量检查：若新数据覆盖的地址数比仓库现有数据骤降（国家/家宽低于 95%，单个省份低于 70%），更新任务会失败并保留旧数据，避免上游临时出错导致误封。确认上游确实缩减时，可用 `python tools/prepare_data.py --refresh-index --force --allow-shrink` 或 `CN_ALLOW_SHRINK=1 bash tools/prepare_home_broadband_data.sh` 强制更新。
+- 已安装的服务器不会自动拿到新数据，请运行一次 `update-data`（见下文）后重新应用规则。
+
 ## 常用 ASN 快捷选项
 
 “编辑全局 ASN 白名单”内置以下可多选项，同时保留手动输入：
@@ -108,6 +115,8 @@ sudo bash install.sh apply
 ## 三大运营商普通家宽模式
 
 在全局白名单或端口白名单中选择 `三大运营商公众接入网（近似普通家宽）`，手动格式可写 `HOME`、`家庭宽带` 或 `普通家宽`。该模式使用 `data/carriers/home-broadband-asns.tsv` 中保守筛选的电信、联通、移动公众接入网 ASN，并明确不包含独立的 IDC、云、IoT、5G-only、工业互联网和国际精品网 ASN；例如不包含电信 CN2 `AS4809`、联通 CUII `AS9929` 和移动国际 `AS58453`。
+
+前缀包由两部分合并：上述 ASN 清单的宣告前缀，加上 `gaoyifan/china-operator-ip` 按运营商整理的 `chinanet`、`unicom`、`cmcc` 列表（覆盖清单未逐个列出的省级 ASN）。合并时会去掉 `AS4809`、`AS9929`、`AS58453` 宣告的前缀，但不会删除 ASN 清单本身已包含的地址。
 
 重要限制：ASN 只能判断 IP 前缀由哪个自治系统宣告，无法证明某个具体 IP 一定是住宅用户。同一个公众接入 ASN 仍可能混有政企或机房地址。若必须做到商业数据库级别的“住宅代理/机房 IP”识别，需要另接带 usage-type 的实时 IP 情报源；本项目当前提供的是可审计、可离线运行的 ASN 级近似。
 
@@ -210,7 +219,7 @@ bash -n install.sh tools/ui_lib.sh tools/firewall_lib.sh
 
 `apply` 会拒绝所有未命中白名单的入站流量，包括 SSH。脚本会检测当前 SSH 客户端 IP，并询问是否加入本次白名单，建议保留默认 `Y`。
 
-国家级 `CN` IPv4 数据来自 APNIC delegated stats，省级 CIDR 数据来自 `metowolf/iplist`，家宽 ASN 登记和用户规模参考 APNIC/APNIC Labs，ASN 前缀来自 `ipverse/as-ip-blocks`。这些数据由 GitHub Actions 生成后预制进仓库，服务器默认不需要 Python。已预制的 ASN 会优先从 `data/asn/` 读取；未预制的 ASN 才会从 `ipverse/as-ip-blocks` 拉取，默认同样会走 `https://gh-proxy.com/`。若服务器缺少 `nftables`、`iptables` 或 `ipset`，脚本会尝试使用系统默认软件源安装依赖；这一步可能访问发行版软件源。
+国家级 `CN` IPv4 数据取 APNIC delegated stats、`misakaio/chnroutes2`（BGP 路由表）、`gaoyifan/china-operator-ip` 和 `metowolf/iplist` 国家列表的并集，避免只看 APNIC 登记信息时漏掉在其他 RIR 登记、但由国内网络实际宣告使用的地址段；省级 CIDR 数据来自 `metowolf/iplist`，家宽 ASN 登记和用户规模参考 APNIC/APNIC Labs，ASN 前缀来自 `ipverse/as-ip-blocks`。这些数据由 GitHub Actions 生成后预制进仓库，服务器默认不需要 Python。已预制的 ASN 会优先从 `data/asn/` 读取；未预制的 ASN 才会从 `ipverse/as-ip-blocks` 拉取，默认同样会走 `https://gh-proxy.com/`。若服务器缺少 `nftables`、`iptables` 或 `ipset`，脚本会尝试使用系统默认软件源安装依赖；这一步可能访问发行版软件源。
 
 默认 GitHub 访问会先经过 `https://gh-proxy.com/`，失败后尝试直连。可以用一个空格或逗号分隔的列表自定义依次尝试的代理，也可以只指定一个代理或直连：
 
