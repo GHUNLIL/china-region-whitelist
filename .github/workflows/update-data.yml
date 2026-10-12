@@ -26,7 +26,13 @@ jobs:
             asn="${raw_asn#AS}"
             curl -fsSL --connect-timeout 20 --retry 2 --retry-delay 1 \
               "https://raw.githubusercontent.com/ipverse/as-ip-blocks/master/as/${asn}/ipv4-aggregated.txt" \
-              -o "data/asn/${raw_asn}.txt"
+              -o "data/asn/${raw_asn}.txt.new"
+            if ! grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$' "data/asn/${raw_asn}.txt.new"; then
+              echo "No IPv4 prefixes downloaded for ${raw_asn}; keeping bundled copy." >&2
+              rm -f "data/asn/${raw_asn}.txt.new"
+              exit 1
+            fi
+            mv "data/asn/${raw_asn}.txt.new" "data/asn/${raw_asn}.txt"
           done < data/asn/presets.tsv
       - name: Refresh three-carrier home broadband data
         run: bash tools/prepare_home_broadband_data.sh
@@ -34,6 +40,7 @@ jobs:
         run: |
           python -m unittest discover -s tests -v
           bash -n install.sh tools/ui_lib.sh tools/firewall_lib.sh tools/prepare_home_broadband_data.sh
+          python -m py_compile tools/prepare_data.py tools/cidr_merge.py
       - name: Commit changes
         run: |
           if git diff --quiet; then

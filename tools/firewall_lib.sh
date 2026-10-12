@@ -833,12 +833,14 @@ cn_normalize_ipv4_cidrs_for_nft() {
       size = 2 ^ (32 - mask)
       start = int(ip2int(cidr[1]) / size) * size
       end = start + size - 1
-      key = start "\t" end
+      # Format explicitly: mawk 1.3.3 prints integers above 2^31 with %.6g,
+      # which collapses distinct high ranges into the same rounded key.
+      key = sprintf("%.0f\t%.0f", start, end)
       if (!seen[key]++) {
-        print start "\t" end "\t" $0
+        print key "\t" $0
       }
     }
-  ' | sort -n -k1,1 -k2,2r | awk -F '\t' '
+  ' | LC_ALL=C sort -t "$(printf '\t')" -k1,1n -k2,2nr | awk -F '\t' '
     BEGIN {
       max_end = -1
     }

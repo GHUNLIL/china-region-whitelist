@@ -1032,6 +1032,55 @@ class FirewallLibTests(unittest.TestCase):
 
         self.assertEqual(cidrs, ["123.184.0.0/13"])
 
+    def test_prepare_data_merges_extra_country_sources(self):
+        prepare_data = load_prepare_data_module()
+        cidrs = prepare_data.build_country_cidrs(
+            "apnic|CN|ipv4|123.184.0.0|524288|20200101|allocated",
+            ["# comment\n1.18.128.0/24\n123.184.0.0/16\nnot-a-cidr\n2408:4000::/22\n"],
+        )
+
+        self.assertEqual(cidrs, ["1.18.128.0/24", "123.184.0.0/13"])
+
+    def test_prepare_data_refuses_large_coverage_drop(self):
+        prepare_data = load_prepare_data_module()
+        old = prepare_data.parse_ipv4_cidr_list("1.0.0.0/8\n")
+        with self.assertRaises(RuntimeError):
+            prepare_data.check_not_shrunk("country CN", old, prepare_data.parse_ipv4_cidr_list("1.0.0.0/9\n"), 0.95)
+        prepare_data.check_not_shrunk("country CN", old, prepare_data.parse_ipv4_cidr_list("1.0.0.0/8\n"), 0.95)
+
+    def test_cidr_merge_keeps_base_and_excludes_only_extra(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            (tmp_path / "base.txt").write_text("10.0.0.0/24\n", encoding="utf-8")
+            (tmp_path / "extra.txt").write_text("10.0.0.0/23\n192.0.2.0/24\n", encoding="utf-8")
+            (tmp_path / "exclude.txt").write_text("10.0.0.0/24\n10.0.1.0/25\n", encoding="utf-8")
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "tools" / "cidr_merge.py"),
+                    "--base",
+                    str(tmp_path / "base.txt"),
+                    "--extra",
+                    str(tmp_path / "extra.txt"),
+                    "--exclude",
+                    str(tmp_path / "exclude.txt"),
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.split(), ["10.0.0.0/24", "10.0.1.128/25", "192.0.2.0/24"])
+
+    def test_nft_cidr_normalization_keeps_distinct_high_ranges(self):
+        result = run_firewall_lib(
+            "printf '%s\\n' 223.5.0.0/16 223.6.0.0/16 223.5.4.0/24 200.0.0.0/8 200.1.0.0/16 | "
+            "cn_normalize_ipv4_cidrs_for_nft"
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.split(), ["200.0.0.0/8", "223.5.0.0/16", "223.6.0.0/16"])
 
 if __name__ == "__main__":
     unittest.main()

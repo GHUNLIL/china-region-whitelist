@@ -18,6 +18,19 @@ DEFAULT_INDEX = ROOT / "data" / "cncity.md"
 DEFAULT_INDEX_URL = "https://raw.githubusercontent.com/metowolf/iplist/master/docs/cncity.md"
 DEFAULT_DATA_BASE_URL = "https://raw.githubusercontent.com/metowolf/iplist/master/data/cncity"
 DEFAULT_COUNTRY_URL = "https://ftp.apnic.net/stats/apnic/delegated-apnic-latest"
+# APNIC registration data alone misses mainland ranges that are registered
+# elsewhere or announced by Chinese networks from other RIR space, which made
+# legitimate mainland clients fall outside the CN whitelist. Union it with
+# BGP- and geolocation-derived lists that are refreshed daily.
+DEFAULT_COUNTRY_EXTRA_URLS = (
+    "https://raw.githubusercontent.com/misakaio/chnroutes2/master/chnroutes.txt",
+    "https://raw.githubusercontent.com/gaoyifan/china-operator-ip/ip-lists/china.txt",
+    "https://raw.githubusercontent.com/metowolf/iplist/master/data/country/CN.txt",
+)
+# Refuse to overwrite bundled data with a list that suddenly lost coverage;
+# a truncated upstream response must fail the update instead of locking users out.
+MIN_COUNTRY_RATIO = 0.95
+MIN_REGION_RATIO = 0.7
 COUNTRY_FILE = "country/CN.txt"
 
 ROW_RE = re.compile(r"^\|([^|]+)\|([^|]+)\|$")
@@ -68,9 +81,46 @@ def download_text(url: str) -> str:
     raise RuntimeError(f"failed to download {url}: {last_error}")
 
 
+def parse_ipv4_cidr_list(text: str) -> list[ipaddress.IPv4Network]:
+    networks: list[ipaddress.IPv4Network] = []
+    for raw_line in text.splitlines():
+        line = raw_line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        try:
+            network = ipaddress.ip_network(line, strict=False)
+        except ValueError:
+            continue
+        if network.version == 4:
+            networks.append(network)
+    return networks
+
+
+def address_count(networks) -> int:
+    return sum(network.num_addresses for network in ipaddress.collapse_addresses(networks))
+
+
+def read_existing_networks(path: Path) -> list[ipaddress.IPv4Network]:
+    if not path.exists():
+        return []
+    return parse_ipv4_cidr_list(path.read_text(encoding="utf-8"))
+
+
+def check_not_shrunk(label: str, old, new, min_ratio: float) -> None:
+    old_count = address_count(old)
+    new_count = address_count(new)
+    if old_count and new_count < old_count * min_ratio:
+        raise RuntimeError(
+            f"{label}: refusing to shrink coverage from {old_count} to {new_count} addresses "
+            f"(below {min_ratio:.0%}); upstream data looks incomplete, use --allow-shrink to override"
+        )
+
+
 def normalize_region_text(text: str) -> str:
-    lines = [line.strip() for line in text.splitlines() if line.strip() and not line.startswith("#")]
-    return "\n".join(lines) + "\n"
+    networks = list(ipaddress.collapse_addresses(parse_ipv4_cidr_list(text)))
+    if not networks:
+        raise RuntimeError("no IPv4 CIDRs found in region data")
+    return "\n".join(str(network) for network in networks) + "\n"
 
 
 def parse_apnic_country_ipv4(text: str, country_code: str = "CN") -> list[str]:
@@ -98,23 +148,53 @@ def region_url(code: str, original_url: str, data_base_url: str) -> str:
     return original_url
 
 
-def write_region_file(code: str, url: str, regions_dir: Path, force: bool, data_base_url: str) -> None:
+def write_region_file(
+    code: str, url: str, regions_dir: Path, force: bool, data_base_url: str, allow_shrink: bool = False
+) -> None:
     regions_dir.mkdir(parents=True, exist_ok=True)
     target = regions_dir / f"{code}.txt"
     if target.exists() and target.stat().st_size > 0 and not force:
         return
-    text = download_text(region_url(code, url, data_base_url))
-    target.write_text(normalize_region_text(text), encoding="utf-8")
+    content = normalize_region_text(download_text(region_url(code, url, data_base_url)))
+    if not allow_shrink:
+        check_not_shrunk(f"region {code}", read_existing_networks(target), parse_ipv4_cidr_list(content), MIN_REGION_RATIO)
+    target.write_text(content, encoding="utf-8")
 
 
-def write_country_file(data_dir: Path, force: bool, country_url: str) -> None:
+def build_country_cidrs(apnic_text: str, extra_texts: list[str]) -> list[str]:
+    networks = [ipaddress.ip_network(cidr) for cidr in parse_apnic_country_ipv4(apnic_text)]
+    if not networks:
+        raise RuntimeError("no CN IPv4 CIDRs parsed from APNIC delegated stats")
+    for text in extra_texts:
+        networks.extend(parse_ipv4_cidr_list(text))
+    return [str(network) for network in ipaddress.collapse_addresses(networks)]
+
+
+def write_country_file(
+    data_dir: Path,
+    force: bool,
+    country_url: str,
+    extra_urls: list[str] | tuple[str, ...] = (),
+    allow_shrink: bool = False,
+) -> None:
     target = data_dir / COUNTRY_FILE
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists() and target.stat().st_size > 0 and not force:
         return
-    country_cidrs = parse_apnic_country_ipv4(download_text(country_url))
-    if not country_cidrs:
-        raise RuntimeError(f"no CN IPv4 CIDRs parsed from {country_url}")
+    extra_texts = []
+    for url in extra_urls:
+        text = download_text(url)
+        if not parse_ipv4_cidr_list(text):
+            raise RuntimeError(f"no IPv4 CIDRs parsed from {url}")
+        extra_texts.append(text)
+    country_cidrs = build_country_cidrs(download_text(country_url), extra_texts)
+    if not allow_shrink:
+        check_not_shrunk(
+            "country CN",
+            read_existing_networks(target),
+            [ipaddress.ip_network(cidr) for cidr in country_cidrs],
+            MIN_COUNTRY_RATIO,
+        )
     target.write_text("\n".join(country_cidrs) + "\n", encoding="utf-8")
 
 
@@ -159,6 +239,18 @@ def main() -> int:
         default=DEFAULT_COUNTRY_URL,
         help="APNIC delegated stats URL used to generate data/country/CN.txt",
     )
+    parser.add_argument(
+        "--country-extra-url",
+        action="append",
+        dest="country_extra_urls",
+        help="Extra CN CIDR list merged into data/country/CN.txt (repeatable; defaults to chnroutes2, "
+        "china-operator-ip and metowolf/iplist)",
+    )
+    parser.add_argument(
+        "--allow-shrink",
+        action="store_true",
+        help="Accept refreshed data even if it covers far fewer addresses than the bundled copy",
+    )
     parser.add_argument("--output-dir", type=Path, default=ROOT, help="Project-style output directory")
     parser.add_argument("--refresh-index", action="store_true", help="Download the latest cncity index first")
     parser.add_argument("--force", action="store_true", help="Overwrite existing region files")
@@ -167,6 +259,10 @@ def main() -> int:
     args = parser.parse_args()
 
     output_dir = args.output_dir
+    country_extra_urls = args.country_extra_urls
+    if country_extra_urls is None:
+        country_extra_urls = list(DEFAULT_COUNTRY_EXTRA_URLS)
+    country_extra_urls = [url for url in country_extra_urls if url]
     data_dir = output_dir / "data"
     regions_dir = data_dir / "regions"
     regions_json = data_dir / "regions.json"
@@ -186,7 +282,7 @@ def main() -> int:
 
     if not args.skip_download:
         print("[country] CN 中国")
-        write_country_file(data_dir, args.force, args.country_url)
+        write_country_file(data_dir, args.force, args.country_url, country_extra_urls, args.allow_shrink)
         entries = list(iter_entries(provinces))
         for index, entry in enumerate(entries, 1):
             print(f"[{index}/{len(entries)}] {entry['code']} {entry['name']}")
@@ -196,6 +292,7 @@ def main() -> int:
                 regions_dir,
                 args.force,
                 args.data_base_url,
+                args.allow_shrink,
             )
 
     metadata = {
@@ -203,12 +300,14 @@ def main() -> int:
         "index_url": args.index_url,
         "data_base_url": args.data_base_url,
         "country_url": args.country_url,
+        "country_extra_urls": country_extra_urls,
         "generated_by": "tools/prepare_data.py",
         "country": {
             "name": "中国",
             "code": "CN",
             "file": COUNTRY_FILE,
             "url": args.country_url,
+            "extra_urls": country_extra_urls,
         },
         "provinces": provinces,
     }
