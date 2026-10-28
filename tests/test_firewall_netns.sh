@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run only in a fresh network namespace: sudo unshare --net bash tests/test_firewall_netns.sh
-set -euo pipefail
+set -Eeuo pipefail
 trap 'echo "Network test failed at line ${LINENO}: ${BASH_COMMAND}" >&2' ERR
 [[ "$(ip -o link show | wc -l)" -eq 1 ]] || { echo 'Refusing to run outside an empty network namespace.' >&2; exit 1; }
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -53,10 +53,10 @@ table ip test_nat {
 }
 NFT
 # Echo servers make both TCP and UDP checks independent of external services.
-server_code='import socket,threading,time
+server_code='import socket,threading,time,sys
 
 def serve(kind):
- s=socket.socket(socket.AF_INET,kind); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1); s.bind(("0.0.0.0",18080))
+ s=socket.socket(socket.AF_INET,kind); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1); s.bind((sys.argv[1],18080))
  if kind==socket.SOCK_STREAM:
   s.listen()
   while True:
@@ -66,9 +66,9 @@ def serve(kind):
    data,a=s.recvfrom(100); s.sendto(b"ok",a)
 for kind in (socket.SOCK_STREAM,socket.SOCK_DGRAM): threading.Thread(target=serve,args=(kind,),daemon=True).start()
 while True: time.sleep(60)'
-python3 -c "${server_code}" &
+python3 -c "${server_code}" 198.18.0.1 &
 server_pid=$!
-ip netns exec "${backend_ns}" python3 -c "${server_code}" &
+ip netns exec "${backend_ns}" python3 -c "${server_code}" 10.10.0.2 &
 sleep 1
 probe() {
   ip netns exec "${client}" python3 - "$@" <<'PY'
