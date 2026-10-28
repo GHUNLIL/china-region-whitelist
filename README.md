@@ -15,6 +15,10 @@
 - `tools/ui_lib.sh`：键盘菜单、输入、返回/取消和多选状态回显
 - `data/regions.json`：省份索引
 - `data/regions.tsv`：服务器 Bash 运行时读取的省份索引
+- `data/countries.tsv`：离线国家/地区代码索引
+- `data/country/*.txt`：各国家/地区的 IPv4 段
+- `tools/country_lib.sh`：国家限制和 IPv6 防绕过规则
+- `tools/prepare_country_data.py`：生成离线国家数据
 - `data/country/CN.txt`：APNIC 国家级中国大陆 IPv4 段，用于“全国/CN”
 - `data/regions/*.txt`：本地省级 CIDR 段
 - `data/asn/presets.tsv`：交互菜单内置的常用 ASN 快捷选项
@@ -64,7 +68,7 @@ sudo bash install.sh apply
 
 脚本默认进入分组后的键盘配置主界面。上/下键移动，空格勾选或取消，回车保存；多选页可以按 `A` 全选、`C` 清空、`Esc` 或 `Q` 取消。菜单上下移动支持首尾循环。
 
-主界面提供 8 个入口：
+主界面提供 9 个入口，其中新增“国家访问限制（一键屏蔽国外/指定国家）”，其余入口如下：
 
 1. 编辑默认白名单：勾选 `全国（中国大陆 CN）`、`三大运营商公众接入网（近似普通家宽）`，或具体省/自治区/直辖市。
 2. 编辑 ASN 白名单：多选 DMIT、AWS、DDPS、HiNet、Nearoute、So-net、SoftBank 等内置项，并可加入自定义 ASN。
@@ -77,7 +81,7 @@ sudo bash install.sh apply
 
 如果 `/etc/china-region-whitelist.conf` 已存在，脚本会把已保存的省份、ASN、端口规则、IP 例外和转发接口载入草案。再次进入编辑页时原有选项会自动勾选；直接返回或取消不会清空旧配置。端口策略修改会带入旧端口和选择，直接回车保留当前值，输入 `-` 才会明确清空可选字段。
 
-规则优先级从高到低如下：
+启用国家访问限制时，先拒绝国家范围外的新连接和新的 IPv6 业务连接，再按以下规则判断。普通规则优先级从高到低如下：
 
 1. 单端口+单 IP 允许/屏蔽；同一单 IP 不允许同时配置相反动作。
 2. 单端口+ASN 允许/屏蔽；若同一来源同时命中端口 IP 与端口 ASN，以更具体的单 IP 为准。
@@ -89,6 +93,47 @@ sudo bash install.sh apply
 同一优先级若不同 ASN 前缀重叠，屏蔽先于允许。已经建立的连接仍由 `ESTABLISHED,RELATED` 保护；新连接按上述优先级判断。
 
 `全国` / `中国` / `CN` 会使用国家级 `data/country/CN.txt`，不会再展开成所有省份 CIDR；只有选择具体省份时才读取省级 CIDR 文件。
+
+## 一键屏蔽国外 / 仅允许指定国家访问
+
+在主菜单选择“国家访问限制”，可一键仅允许中国大陆 `CN`，也可多选国家/地区。快捷命令跳过配置菜单，仍保留应用前确认和应用后的连接确认：
+
+```bash
+# 预览仅允许中国大陆的规则
+bash install.sh dry-run --offline --block-foreign
+
+# 仅允许中国大陆
+sudo bash install.sh apply --offline --block-foreign
+
+# 仅允许中国大陆、日本、新加坡（国家之间为并集）
+sudo bash install.sh apply --offline --allow-countries=CN,JP,SG
+```
+
+也可直接通过一键入口应用：
+
+```bash
+bash <(curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/GHUNLIL/china-region-whitelist/main/bootstrap.sh) apply --block-foreign
+bash <(curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/GHUNLIL/china-region-whitelist/main/bootstrap.sh) apply --allow-countries=CN,JP,SG
+```
+
+- 使用两位国家/地区代码，不区分大小写，支持逗号分隔；完整列表在 `data/countries.tsv`。本次随包提供 240 个有 IPv4 分配数据的国家/地区。
+- 国家限制在既有连接、回环保护之后，在所有 ASN、单 IP、端口允许规则之前执行。其他国家的新连接会被拒绝，不能通过额外的 ASN 白名单绕过；国家范围内仍按原有端口和 IP 规则判断。
+- 与原脚本一样，默认覆盖本机 `INPUT` 和 DNAT 入站 `FORWARD`，包括 TCP/UDP；不管理 `OUTPUT`、普通路由转发，也不终止已建立连接。接口限定仍生效。
+- **IPv4 按所选国家放行；新的 IPv6 业务连接全部拒绝**，防止 IPv6 绕过。保留回环、已建立连接和必要 ICMPv6 控制报文。这不是按国家放行 IPv6 的功能。iptables 后端开启此功能时必须有 `ip6tables`，缺少时会尝试安装依赖。
+- SSH 临时 IP 也不能绕过国家限制。如果管理 IP 不在所选国家范围内，新 SSH 连接会被拒绝；务必通过新连接确认后再保存。超时清理和 `clear` 会一并移除 IPv6 防护规则。
+- 快捷命令建立新的国家配置草案，不载入旧的 ASN/端口/IP 例外；交互菜单选择国家限制会替换默认地区选择，并保留草案中的其他例外。要保留并编辑已有规则，请使用交互菜单。
+- 配置保存为 `CN_ALLOWED_COUNTRIES`，重启时离线恢复；旧配置缺少此字段时不启用额外国家限制。关闭国家限制后，普通地区/ASN 白名单仍然生效。
+
+国家数据也可以用于普通白名单和端口白名单，例如 `22=CN,JP;443=US,AS45090`。只有启用“国家访问限制”时才增加上述强制限制和 IPv6 防护。
+
+`CN` 保留原有多个中国大陆路由源的并集；其他国家/地区由 [IPdeny](https://www.ipdeny.com/ipblocks/) 的 IPv4 分配列表生成，国家代码表示地址分配归属，不保证实际物理位置。`HK`、`MO`、`TW` 为独立数据项，不会因为选择 `CN` 而自动并入。上游数据有延迟或误差，无法保证识别代理/VPN 的真实使用者所在地。
+
+所有国家文件随包下载，选择和恢复规则时无需额外联网。GitHub Actions 每小时更新；生成阶段会拒绝畸形前缀、国家丢失和单国覆盖量下降超过 5% 的更新。手动刷新：
+
+```bash
+python3 tools/prepare_country_data.py
+# 核实上游确实缩减后才使用 --allow-shrink
+```
 
 ## 数据准确性说明
 
@@ -109,6 +154,15 @@ sudo bash install.sh apply
 | Nearoute | `AS51847` | Nearoute Limited |
 | So-net | `AS2527` | Sony Network Communications Inc. |
 | SoftBank | `AS17676` | SoftBank Corp. |
+| 腾讯云 | `AS45090` | Shenzhen Tencent Computer Systems Company Limited |
+| 腾讯云国际 | `AS132203` | Shenzhen Tencent Computer Systems Company Limited |
+| 火山引擎 | `AS137718` | Beijing Volcano Engine Technology Co. Ltd. |
+| Wave（Blossom 示例网络） | `AS11404` | Wave Broadband |
+| HE / Tunnel Broker（IPv4） | `AS6939` | Hurricane Electric LLC |
+
+Wave 预设按示例 IP `208.76.154.155` 核实：RIPEstat 返回宣告网络 `AS11404`、路由 `208.76.152.0/22`，随包 AS11404 数据覆盖该 IP。这里允许整个 Wave ASN，不能据此识别所有 Blossom 产品。
+
+HE 预设包含 **AS6939 宣告的 IPv4 前缀**，范围大于 Tunnel Broker 服务端。它不代表 HE 的全部下游网络，也不会放行 `2001:470::/32` 等 IPv6 隧道用户地址。本项目尚未提供 IPv6 ASN/国家白名单；如果服务器业务依赖 HE IPv6 隧道，开启下述国家限制会拒绝新的 IPv6 业务连接。
 
 这些是常用主 ASN 快捷项，不代表相应品牌旗下的全部网络。目标 IP 如果由其他 ASN 宣告，仍需在“手动输入其他 ASN”中补充。内置项及其 IPv4 前缀由 `data/asn/presets.tsv` 和 GitHub Actions 定时更新；启动校验会要求表中的每个 ASN 都存在对应前缀文件，避免选完后才临时联网。
 
@@ -212,7 +266,9 @@ bash <(curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/GHUNLIL
 
 ```bash
 python3 -m unittest discover -s tests -v
-bash -n install.sh tools/ui_lib.sh tools/firewall_lib.sh
+bash -n install.sh bootstrap.sh tools/ui_lib.sh tools/firewall_lib.sh tools/country_lib.sh
+# Linux 上使用全新网络命名空间验证实际规则，绝不在主机网络中执行测试
+sudo unshare --net bash tests/test_firewall_netns.sh
 ```
 
 ## 安全提示

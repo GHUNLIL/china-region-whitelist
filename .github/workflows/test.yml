@@ -1,0 +1,26 @@
+name: Test firewall
+on:
+  push:
+    paths-ignore:
+      - 'data/**'
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Unit and shell checks
+        run: |
+          python -m unittest discover -s tests -v
+          bash -n install.sh bootstrap.sh tools/*.sh tests/test_firewall_netns.sh
+          python -m py_compile tools/*.py
+      - name: Install firewall test dependencies
+        run: sudo apt-get update && sudo apt-get install -y nftables iptables ipset iproute2 iputils-ping
+      - name: Test real rules in an isolated network namespace
+        run: sudo unshare --net bash tests/test_firewall_netns.sh

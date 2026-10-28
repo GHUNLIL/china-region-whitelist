@@ -15,6 +15,10 @@ usage() {
                          交互选择整机白名单和端口优先白名单、应用防火墙并配置开机恢复
   ./install.sh dry-run [--offline|--update|--update-optional]
                          交互选择整机白名单和端口优先白名单，只打印将执行的命令
+  ./install.sh apply --block-foreign [--offline]
+    一键仅允许中国大陆 CN 入站访问（保留应用确认）。
+  ./install.sh apply --allow-countries=CN,JP,SG [--offline]
+    仅允许指定国家/地区；dry-run 支持相同参数。
   ./install.sh restore [--offline|--update|--update-optional]
                          使用上次保存的省份配置重新应用规则
   ./install.sh update-data
@@ -69,13 +73,8 @@ load_common_asn_menu_options() {
 append_unique_selected_code() {
   local candidate="$1"
   local existing
-  if cn_is_all_china_selector "${candidate}"; then
-    SELECTED_CODES=("CN")
-    return 0
-  fi
   if ((${#SELECTED_CODES[@]} > 0)); then
     for existing in "${SELECTED_CODES[@]}"; do
-      cn_is_all_china_selector "${existing}" && return 0
       [[ "${existing}" == "${candidate}" ]] && return 0
     done
   fi
@@ -146,12 +145,17 @@ interactive_select_codes() {
       "全国（中国大陆 CN）" "CN"
       "三大运营商公众接入网（近似普通家宽）" "HOME"
     )
+    local country_code country_name
+    while IFS=$'\t' read -r country_code country_name; do
+      [[ "${country_code}" =~ ^[A-Z]{2}$ && "${country_code}" != CN ]] || continue
+      menu_items+=("${country_name}（${country_code}）" "${country_code}")
+    done < "${DATA_DIR}/countries.tsv"
     for ((i = 0; i < ${#PROVINCE_MENU_LABELS[@]}; i++)); do
       menu_items+=("${PROVINCE_MENU_LABELS[$i]}" "${PROVINCE_MENU_CODES[$i]}")
     done
 
     visual_multi_select \
-      "默认白名单（全国、家宽、具体省份可多选）" \
+      "默认白名单（国家/地区、家宽、具体省份可多选）" \
       0 \
       "$(join_by_delim " " "${initial_codes[@]}")" \
       "${menu_items[@]}"
@@ -174,7 +178,7 @@ interactive_select_codes() {
   echo "请选择省/自治区/直辖市：" >&2
   cn_show_provinces >&2
   echo >&2
-  echo "输入编号或省份名称，多个用空格/逗号分隔；输入 全国 表示 CN；输入 家庭宽带 表示三大运营商公众接入网。" >&2
+  echo "输入编号或省份名称，多个用空格/逗号分隔；输入 全国 表示 CN；输入 家庭宽带 表示三大运营商公众接入网；也可输入 JP、US 等国家代码。" >&2
 
   local province_input
   province_input="$(read_from_tty "省份: ")"
@@ -188,6 +192,8 @@ interactive_select_codes() {
     [[ -n "${province_selector}" ]] || continue
     if cn_is_all_china_selector "${province_selector}"; then
       append_unique_selected_code "CN"
+    elif cn_is_country_code "${province_selector}"; then
+      append_unique_selected_code "$(cn_normalize_country_code "${province_selector}")"
     elif cn_is_home_broadband_selector "${province_selector}"; then
       append_unique_selected_code "HOME"
     else
@@ -272,7 +278,10 @@ interactive_select_global_ip_rules() {
   done < <(cn_split_selector_list "${initial_rules}")
 
   while true; do
-    current_text="$(join_by_comma "${rules[@]}")"
+    current_text=""
+    if ((${#rules[@]} > 0)); then
+      current_text="$(join_by_comma "${rules[@]}")"
+    fi
     if ((${#rules[@]} == 0)); then
       done_label="保存并返回（当前未配置）"
     else
@@ -479,7 +488,7 @@ interactive_select_port_policies_line() {
   echo "可选：端口优先白名单。命中端口策略时，会先按该端口自己的白名单判断。" >&2
   echo "格式：端口=白名单；多条用英文或中文分号分隔。" >&2
   echo "示例：22=上海市,AS16509,1.2.3.4/32;10000-20000=广东省,江苏省" >&2
-  echo "白名单可写：全国/中国、家庭宽带、具体省份、AS12345、IPv4 或 IPv4 CIDR。留空则只使用整机默认白名单。" >&2
+  echo "白名单可写：全国/中国、JP/US 等国家代码、家庭宽带、具体省份、AS12345、IPv4 或 IPv4 CIDR。留空则只使用整机默认白名单。" >&2
   read_manual_port_policies "端口优先白名单（可空）: "
 }
 
@@ -493,10 +502,12 @@ normalize_extra_policy_selectors() {
     if [[ "${selector}" =~ ^[Aa][Ss][0-9]+$ ]]; then
       asn="$(cn_normalize_asn "${selector}")"
       EXTRA_POLICY_SELECTORS+=("AS${asn}")
+    elif cn_is_country_code "${selector}"; then
+      EXTRA_POLICY_SELECTORS+=("$(cn_normalize_country_code "${selector}")")
     elif cn_validate_ipv4_cidr "${selector}"; then
       EXTRA_POLICY_SELECTORS+=("${selector}")
     else
-      echo "额外白名单只支持 ASN、IPv4 或 IPv4 CIDR：${selector}" >&2
+      echo "额外白名单只支持国家代码、ASN、IPv4 或 IPv4 CIDR：${selector}" >&2
       return 1
     fi
   done < <(split_user_list "${extra_input}")
@@ -530,6 +541,8 @@ load_port_policy_editor_state() {
     elif [[ "${selector}" =~ ^[Aa][Ss][0-9]+$ ]]; then
       asn="$(cn_normalize_asn "${selector}")"
       PORT_POLICY_EXTRA_SELECTORS+=("AS${asn}")
+    elif cn_is_country_code "${selector}"; then
+      PORT_POLICY_EXTRA_SELECTORS+=("$(cn_normalize_country_code "${selector}")")
     elif cn_validate_ipv4_cidr "${selector}"; then
       PORT_POLICY_EXTRA_SELECTORS+=("${selector}")
     else
@@ -581,14 +594,14 @@ build_port_policy_visual() {
   selectors=("${VISUAL_SELECTED_VALUES[@]}")
 
   if ((${#PORT_POLICY_EXTRA_SELECTORS[@]} > 0)); then
-    extra_input="$(read_from_tty "额外 ASN/IP/CIDR [当前 ${PORT_POLICY_EXTRA_SELECTORS[*]}；回车保留，- 清空，Q 取消]: ")"
+    extra_input="$(read_from_tty "额外国家代码/ASN/IP/CIDR [当前 ${PORT_POLICY_EXTRA_SELECTORS[*]}；回车保留，- 清空，Q 取消]: ")"
     case "$(cn_trim "${extra_input}")" in
       q|Q) return 1 ;;
       "") extra_input="${PORT_POLICY_EXTRA_SELECTORS[*]}" ;;
       -) extra_input="" ;;
     esac
   else
-    extra_input="$(read_from_tty "额外 ASN/IP/CIDR（可空，多个用空格或逗号分隔）: ")"
+    extra_input="$(read_from_tty "额外国家代码/ASN/IP/CIDR（可空，多个用空格或逗号分隔）: ")"
     [[ "$(cn_trim "${extra_input}")" != "q" && "$(cn_trim "${extra_input}")" != "Q" ]] || return 1
   fi
   if [[ -n "$(cn_trim "${extra_input}")" ]]; then
@@ -906,13 +919,14 @@ config_editor_title() {
 白名单配置主界面
 
 全局白名单：${codes_text}
+国家限制：${CN_ALLOWED_COUNTRIES:-未启用}
 全局 ASN：${asns_text}
 托管范围：${forward_text}
 全局单 IP：${global_ip_text}
 端口白名单：${ports_text}
 端口 IP/ASN 例外：${port_exception_text}
 
-优先级：端口+单 IP > 端口+ASN > 端口白名单 > 全局单 IP > 全局白名单。
+优先级：国家限制（启用时） > 端口+单 IP > 端口+ASN > 端口白名单 > 全局单 IP > 全局白名单。
 EOF
 }
 
@@ -929,6 +943,7 @@ show_config_visual() {
   else
     printf '全局 ASN：未配置\n' >&2
   fi
+  printf '国家限制：%s\n' "${CN_ALLOWED_COUNTRIES:-未启用}" >&2
   printf '托管范围：%s\n' "$(forward_scope_summary "${CONFIG_FORWARD_MODE}" "${CONFIG_FORWARD_IFACES[@]}")" >&2
   printf '全局单 IP 允许/屏蔽：%s\n' "${CONFIG_GLOBAL_IP_RULES:-未配置}" >&2
   if [[ "${#CONFIG_PORT_POLICIES[@]}" -gt 0 ]]; then
@@ -941,7 +956,7 @@ show_config_visual() {
     printf '端口白名单：未配置\n' >&2
   fi
   printf '端口 IP/ASN 例外：%s\n' "${CONFIG_PORT_EXCEPTIONS:-未配置}" >&2
-  printf '\n优先级：端口+单 IP > 端口+ASN > 端口白名单 > 全局单 IP > 全局白名单。\n' >&2
+  printf '\n优先级：国家限制（启用时） > 端口+单 IP > 端口+ASN > 端口白名单 > 全局单 IP > 全局白名单。\n' >&2
   pause_visual
 }
 
@@ -1031,7 +1046,9 @@ load_saved_config_into_editor() {
   CONFIG_CODES=()
   CONFIG_ASNS=()
   CONFIG_PORT_POLICIES=()
+  CN_ALLOWED_COUNTRIES=""
   [[ -r "${CN_CONFIG_FILE}" ]] || return 0
+  CN_ALLOWED_COUNTRIES="$(cn_source_config; printf '%s' "${CN_ALLOWED_COUNTRIES}")"
 
   while IFS= read -r item; do
     [[ -n "${item}" ]] && CONFIG_CODES+=("${item}")
@@ -1101,6 +1118,35 @@ maintenance_menu_visual() {
   done
 }
 
+# Country restriction is a mandatory gate ahead of all allow exceptions.
+edit_country_access_visual() {
+  local countries input
+  visual_single_select "国家访问限制（已建立连接保留；新 IPv6 业务连接拒绝）" \
+    "一键屏蔽国外网络（仅允许中国大陆 CN）" "cn" \
+    "仅允许指定国家/地区（可多选）" "select" \
+    "关闭国家限制，使用普通白名单" "off" \
+    "返回" "back"
+  case "${VISUAL_SELECTED_VALUE}" in
+    cn) countries=CN ;;
+    select)
+      local code name
+      local -a items=()
+      while IFS=$'\t' read -r code name; do
+        [[ "${code}" =~ ^[A-Z]{2}$ ]] || continue
+        items+=("${name}（${code}）" "${code}")
+      done < "${DATA_DIR}/countries.tsv"
+      visual_multi_select "允许访问的国家/地区" 0 "${CN_ALLOWED_COUNTRIES}" "${items[@]}"
+      [[ "${VISUAL_CANCELLED}" -eq 0 ]] || return 0
+      input="$(join_by_delim " " "${VISUAL_SELECTED_VALUES[@]}")"
+      countries="$(cn_normalize_countries "${input}")" || { pause_visual; return 0; }
+      ;;
+    off) CN_ALLOWED_COUNTRIES=""; return 0 ;;
+    *) return 0 ;;
+  esac
+  CN_ALLOWED_COUNTRIES="${countries}"
+  read -r -a CONFIG_CODES <<<"${countries}"
+}
+
 interactive_config_editor() {
   local dry_run="${1:-0}"
   CONFIG_CODES=()
@@ -1122,7 +1168,8 @@ interactive_config_editor() {
     fi
     visual_single_select \
       "${title}" \
-      "编辑默认白名单（全国/家宽/省份）" "edit_global" \
+      "国家访问限制（一键屏蔽国外/指定国家）" "country_access" \
+      "编辑默认白名单（国家/家宽/省份）" "edit_global" \
       "编辑 ASN 白名单（常用预设/自定义）" "edit_asn" \
       "编辑入站托管范围" "edit_forward" \
       "管理端口白名单" "ports" \
@@ -1131,6 +1178,7 @@ interactive_config_editor() {
       "维护工具" "maintenance" \
       "${done_label}" "done"
     case "${VISUAL_SELECTED_VALUE}" in
+      country_access) edit_country_access_visual ;;
       edit_global)
         edit_global_codes_visual
         ;;
@@ -1324,6 +1372,14 @@ parse_update_mode() {
   local arg
   for arg in "$@"; do
     case "${arg}" in
+      --block-foreign)
+        [[ "${command:-apply}" == apply || "${command:-apply}" == dry-run ]] || { echo '国家选项仅用于 apply/dry-run。' >&2; exit 2; }
+        COUNTRY_PRESET_INPUT=CN ;;
+      --allow-countries=*)
+        [[ "${command:-apply}" == apply || "${command:-apply}" == dry-run ]] || { echo '国家选项仅用于 apply/dry-run。' >&2; exit 2; }
+        COUNTRY_PRESET_INPUT="${arg#*=}"
+        [[ -n "${COUNTRY_PRESET_INPUT}" ]] || { echo '国家列表不能为空。' >&2; exit 2; }
+        ;;
       --update) UPDATE_MODE="required" ;;
       --offline|--no-update) UPDATE_MODE="offline" ;;
       --update-optional) UPDATE_MODE="optional" ;;
@@ -1384,7 +1440,11 @@ run_apply_or_dry_run() {
   SELECTED_PORT_EXCEPTIONS=""
   SELECTED_FORWARD_MODE=""
   SELECTED_FORWARD_IFACES=()
-  if visual_menu_available; then
+  if [[ -n "${COUNTRY_PRESET_INPUT:-}" ]]; then
+    CN_ALLOWED_COUNTRIES="$(cn_normalize_countries "${COUNTRY_PRESET_INPUT}")"
+    read -r -a SELECTED_CODES <<<"${CN_ALLOWED_COUNTRIES}"
+    interactive_select_forward_interfaces
+  elif visual_menu_available; then
     interactive_config_editor "${dry_run}"
   else
     interactive_select_codes
@@ -1429,7 +1489,8 @@ run_apply_or_dry_run() {
   local client_ip
   client_ip="$(confirm_client_ip "$(cn_detect_ssh_client_ip)")"
 
-  final_summary="默认白名单：$(codes_detail "${selected_codes[@]}")
+  final_summary="国家限制：${CN_ALLOWED_COUNTRIES:-未启用}
+默认白名单：$(codes_detail "${selected_codes[@]}")
 ASN 白名单：${selected_asns_text:-未配置}
 托管范围：$(forward_scope_summary "${selected_forward_mode}" "${selected_forward_ifaces[@]}")
 端口白名单：${selected_port_policies:-未配置}
@@ -1437,6 +1498,9 @@ ASN 白名单：${selected_asns_text:-未配置}
 端口 IP/ASN 例外：${selected_port_exceptions:-未配置}
 SSH 临时白名单：${client_ip:-未加入}
 防火墙后端：$(cn_effective_firewall_backend)"
+  if [[ -n "${CN_ALLOWED_COUNTRIES}" ]]; then
+    final_summary+=$'\n国家限制优先于所有 ASN/IP/端口允许规则，SSH 临时 IP 也不能绕过。\n新的 IPv6 业务连接将被拒绝；已建立连接及必要 ICMPv6 保留。'
+  fi
   printf '\n配置预览\n\n%s\n\n' "${final_summary}"
 
   if [[ "${dry_run}" == "1" ]]; then
@@ -1597,6 +1661,7 @@ clear_rules() {
 main() {
   local command="${1:-apply}"
   local startup_update_mode="optional"
+  COUNTRY_PRESET_INPUT=""
   shift || true
   if [[ "${CN_BOOTSTRAP_DATA_READY:-0}" == "1" ]]; then
     startup_update_mode="offline"

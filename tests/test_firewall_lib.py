@@ -270,7 +270,7 @@ class FirewallLibTests(unittest.TestCase):
         script = INSTALL_SH.read_text(encoding="utf-8")
 
         for expected in (
-            "编辑默认白名单（全国/家宽/省份）",
+            "编辑默认白名单（国家/家宽/省份）",
             "编辑 ASN 白名单（常用预设/自定义）",
             "编辑入站托管范围",
             "管理端口白名单",
@@ -440,7 +440,8 @@ class FirewallLibTests(unittest.TestCase):
 
         self.assertEqual(
             preset_asns,
-            ["AS906", "AS16509", "AS18526", "AS3462", "AS51847", "AS2527", "AS17676"],
+            ["AS906", "AS16509", "AS18526", "AS3462", "AS51847", "AS2527", "AS17676",
+             "AS45090", "AS132203", "AS137718", "AS11404", "AS6939"],
         )
         for asn in preset_asns:
             prefix_file = ROOT / "data" / "asn" / f"{asn}.txt"

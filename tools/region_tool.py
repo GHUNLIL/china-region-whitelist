@@ -78,6 +78,8 @@ def normalize_name(name: str) -> str:
 def find_region_file(metadata: dict, code: str) -> str:
     if is_china_selector(code):
         return str(metadata.get("country", {}).get("file", "country/CN.txt"))
+    if re.fullmatch(r"[A-Za-z]{2}", code):
+        return f"country/{code.upper()}.txt"
     for province in metadata["provinces"]:
         if str(province["code"]) == code:
             return str(province["file"])

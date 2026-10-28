@@ -107,6 +107,8 @@ validate_project_bundle() {
     "${source_dir}/install.sh" \
     "${source_dir}/tools/firewall_lib.sh" \
     "${source_dir}/tools/ui_lib.sh" \
+    "${source_dir}/tools/country_lib.sh" \
+    "${data_dir}/countries.tsv" \
     "${data_dir}/regions.json" \
     "${data_dir}/regions.tsv" \
     "${data_dir}/country/CN.txt" \
@@ -118,6 +120,12 @@ validate_project_bundle() {
       return 1
     fi
   done
+
+  local country_code _country_name
+  while IFS=$'\t' read -r country_code _country_name; do
+    [[ "${country_code}" =~ ^[A-Z]{2}$ ]] || continue
+    [[ -s "${data_dir}/country/${country_code}.txt" ]] || { echo "缺少国家数据：${country_code}" >&2; return 1; }
+  done < "${data_dir}/countries.tsv"
 
   while IFS=$'\t' read -r raw_asn _provider _description; do
     [[ "${raw_asn}" =~ ^AS[0-9]+$ ]] || continue
