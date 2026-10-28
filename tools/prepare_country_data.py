@@ -26,6 +26,9 @@ def parse_archive(payload):
             name = Path(member.name).name
             if not member.isfile() or not re.fullmatch(r'[a-z]{2}\.zone', name):
                 continue
+            # RIR special buckets are not countries (EU, Asia-Pacific, unknown).
+            if name[:2] in {'eu', 'ap', 'zz'}:
+                continue
             networks = []
             for line in archive.extractfile(member).read().decode('ascii').splitlines():
                 line = line.strip()

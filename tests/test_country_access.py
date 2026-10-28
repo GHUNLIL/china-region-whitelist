@@ -147,6 +147,8 @@ restore_rules offline
     def test_real_bundles_and_wave_sample(self):
         rows = [s.split('\t')[0] for s in (ROOT / 'data/countries.tsv').read_text().splitlines() if s and not s.startswith('#')]
         self.assertGreaterEqual(len(rows), 200)
+        self.assertNotIn('ZZ', rows)
+        self.assertNotIn('EU', rows)
         for code in rows:
             nets = (ROOT / 'data/country' / f'{code}.txt').read_text().splitlines()
             self.assertTrue(nets, code)

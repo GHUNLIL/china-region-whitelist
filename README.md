@@ -116,7 +116,7 @@ bash <(curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/GHUNLIL
 bash <(curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/GHUNLIL/china-region-whitelist/main/bootstrap.sh) apply --allow-countries=CN,JP,SG
 ```
 
-- 使用两位国家/地区代码，不区分大小写，支持逗号分隔；完整列表在 `data/countries.tsv`。本次随包提供 240 个有 IPv4 分配数据的国家/地区。
+- 使用两位国家/地区代码，不区分大小写，支持逗号分隔；完整列表在 `data/countries.tsv`。本次随包提供 238 个有 IPv4 分配数据的国家/地区。
 - 国家限制在既有连接、回环保护之后，在所有 ASN、单 IP、端口允许规则之前执行。其他国家的新连接会被拒绝，不能通过额外的 ASN 白名单绕过；国家范围内仍按原有端口和 IP 规则判断。
 - 与原脚本一样，默认覆盖本机 `INPUT` 和 DNAT 入站 `FORWARD`，包括 TCP/UDP；不管理 `OUTPUT`、普通路由转发，也不终止已建立连接。接口限定仍生效。
 - **IPv4 按所选国家放行；新的 IPv6 业务连接全部拒绝**，防止 IPv6 绕过。保留回环、已建立连接和必要 ICMPv6 控制报文。这不是按国家放行 IPv6 的功能。iptables 后端开启此功能时必须有 `ip6tables`，缺少时会尝试安装依赖。

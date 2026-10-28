@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Run only in a fresh network namespace: sudo unshare --net bash tests/test_firewall_netns.sh
 set -euo pipefail
+trap 'echo "Network test failed at line ${LINENO}: ${BASH_COMMAND}" >&2' ERR
 [[ "$(ip -o link show | wc -l)" -eq 1 ]] || { echo 'Refusing to run outside an empty network namespace.' >&2; exit 1; }
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 source "${ROOT}/tools/firewall_lib.sh"
@@ -80,17 +81,22 @@ try:
  s.connect(('198.18.0.1',int(port)))
  if protocol=='udp': s.send(b'probe')
  assert s.recv(10)==b'ok'
-except (OSError,AssertionError): sys.exit(1)
+except (OSError,AssertionError) as error:
+ print(f"Probe {source}:{port}/{protocol}: {error}",file=sys.stderr)
+ sys.exit(1)
 PY
 }
 expect_blocked() {
   if probe "$@"; then echo "Unexpected access: $*" >&2; exit 1; fi
 }
 # Baseline proves the routes and services work before applying policy.
+echo "Checking TCP INPUT baseline"
 probe 192.0.2.2 18080 tcp
+echo "Checking UDP DNAT baseline"
 probe 192.0.2.2 18081 udp
 ip netns exec "${client}" ping -6 -e 4320 -c 1 -W 1 fd00:1234::1 >/dev/null
 for backend in nft iptables; do
+  echo "Applying ${backend} country policy"
   CN_FIREWALL_BACKEND="${backend}"
   CN_ALLOWED_COUNTRIES='CN JP'
   CN_GLOBAL_IP_RULES='allow:192.0.2.2'
