@@ -112,6 +112,7 @@ validate_project_bundle() {
     "${data_dir}/regions.json" \
     "${data_dir}/regions.tsv" \
     "${data_dir}/country/CN.txt" \
+    "${data_dir}/country6/CN.txt" \
     "${data_dir}/asn/presets.tsv" \
     "${data_dir}/carriers/home-broadband.txt" \
     "${data_dir}/carriers/home-broadband-asns.tsv"; do

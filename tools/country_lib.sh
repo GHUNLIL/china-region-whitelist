@@ -58,13 +58,39 @@ cn_country_gate_cidrs() {
   done
 }
 
+# Country filtering currently has a bundled IPv6 policy for mainland CN.
+# Keep other countries fail-closed until their IPv6 data is explicitly added.
+cn_country_gate_ipv6_cidrs() {
+  [[ -n "${CN_ALLOWED_COUNTRIES}" ]] || return 0
+  local countries file
+  countries="$(cn_normalize_countries "${CN_ALLOWED_COUNTRIES}")" || return 1
+  case " ${countries} " in *" CN "*) ;; *) return 0 ;; esac
+  file="${DATA_DIR}/country6/CN.txt"
+  [[ -s "${file}" ]] || { echo "缺少中国大陆 IPv6 数据：${file}" >&2; return 1; }
+  awk '
+    /^[[:space:]]*#/ || /^[[:space:]]*$/ {next}
+    {sub(/[[:space:]]+$/, ""); n=split($0,p,"/"); a=p[1];
+     if(n!=2 || p[2]!~/^[0-9]+$/ || p[2]<16 || p[2]>128 || a!~/^[23][0-9a-fA-F:]+$/) bad=1;
+     compressed=index(a,"::"); rest=a; sub(/::/,"",rest);
+     if(index(rest,"::") || index(a,":::") || (a ~ /:$/ && a !~ /::$/)) bad=1;
+     count=split(a,parts,":"); groups=0;
+     for(i=1;i<=count;i++) if(parts[i]!="") {groups++; if(length(parts[i])>4) bad=1}
+     if((compressed && groups>=8) || (!compressed && groups!=8)) bad=1;
+     lines[++total]=$0}
+    END {if(bad || !total) exit 1; for(i=1;i<=total;i++) print lines[i]}
+  ' "${file}" || { echo "中国大陆 IPv6 数据为空或格式错误。" >&2; return 1; }
+}
+
 cn_render_nft_country_gate() {
   local prefix="${1:-}"
   [[ -n "${CN_ALLOWED_COUNTRIES}" ]] || return 0
   if [[ -z "${prefix}" ]]; then
-    # Keep IPv6 neighbor discovery and error reporting, but no new IPv6 services.
+    # Preserve neighbor discovery and error reporting independently of country.
     printf '    meta nfproto ipv6 meta l4proto ipv6-icmp icmpv6 type { 1, 2, 3, 4 } accept\n'
     printf '    meta nfproto ipv6 ip6 hoplimit 255 meta l4proto ipv6-icmp icmpv6 type { 133, 134, 135, 136 } accept\n'
+  fi
+  if [[ -n "${country_ipv6_cidrs:-}" ]]; then
+    printf '    %sip6 saddr @country_allowed_v6 counter accept\n' "${prefix}"
   fi
   printf '    %smeta nfproto ipv6 reject\n' "${prefix}"
   printf '    %sip saddr != @country_allowed_v4 reject\n' "${prefix}"
@@ -79,12 +105,21 @@ cn_render_clear_country_ipv6() {
   printf 'ip6tables -F CN_COUNTRY_V6 2>/dev/null || true\n'
   printf 'ip6tables -X CN_COUNTRY_V6 2>/dev/null || true\n'
   printf 'fi\n'
+  printf 'command -v ipset >/dev/null 2>&1 && ipset destroy %s_country6 2>/dev/null || true\n' "${CN_SET_NAME}"
 }
 
 cn_render_country_ipv6_guard() {
   local mode="$1" ifaces="$2" iface kind
   cn_render_clear_country_ipv6
   [[ -n "${CN_ALLOWED_COUNTRIES}" ]] || return 0
+  if [[ -n "${country_ipv6_cidrs:-}" ]]; then
+    printf 'ipset create %s_country6 hash:net family inet6 -exist\n' "${CN_SET_NAME}"
+    printf 'ipset flush %s_country6\n' "${CN_SET_NAME}"
+    local cidr
+    while IFS= read -r cidr; do
+      [[ -z "${cidr}" ]] || printf 'ipset add %s_country6 %s -exist\n' "${CN_SET_NAME}" "${cidr}"
+    done <<<"${country_ipv6_cidrs}"
+  fi
   printf 'ip6tables -N CN_COUNTRY_V6\n'
   printf 'ip6tables -A CN_COUNTRY_V6 -i lo -j ACCEPT\n'
   printf 'ip6tables -A CN_COUNTRY_V6 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT\n'
@@ -94,6 +129,9 @@ cn_render_country_ipv6_guard() {
   for kind in 133 134 135 136; do
     printf 'ip6tables -A CN_COUNTRY_V6 -p ipv6-icmp --icmpv6-type %s -m hl --hl-eq 255 -j ACCEPT\n' "${kind}"
   done
+  if [[ -n "${country_ipv6_cidrs:-}" ]]; then
+    printf 'ip6tables -A CN_COUNTRY_V6 -m set --match-set %s_country6 src -j ACCEPT\n' "${CN_SET_NAME}"
+  fi
   printf 'ip6tables -A CN_COUNTRY_V6 -j REJECT\n'
   printf 'ip6tables -I INPUT 1 -j CN_COUNTRY_V6\n'
   if [[ "${mode}" == "all" ]]; then

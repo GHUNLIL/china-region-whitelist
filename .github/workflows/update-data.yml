@@ -20,6 +20,8 @@ jobs:
         run: python tools/prepare_data.py --refresh-index --force
       - name: Refresh bundled country data
         run: python tools/prepare_country_data.py
+      - name: Refresh mainland IPv6 data
+        run: python tools/prepare_ipv6_data.py
       - name: Refresh bundled ASN data
         run: |
           mkdir -p data/asn
@@ -51,6 +53,6 @@ jobs:
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/cncity.md data/regions.json data/regions.tsv data/countries.tsv data/regions data/country data/asn data/carriers
+          git add data/cncity.md data/regions.json data/regions.tsv data/countries.tsv data/regions data/country data/country6 data/asn data/carriers
           git commit -m "Update bundled IP data"
           git push

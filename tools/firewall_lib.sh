@@ -130,6 +130,7 @@ cn_download_repo_archive() {
 
 cn_validate_prebuilt_data_dir() {
   local data_dir="$1"
+  [[ -s "${data_dir}/country6/CN.txt" ]] || { echo "缺少中国大陆 IPv6 数据" >&2; return 1; }
   if [[ ! -s "${data_dir}/regions.json" || ! -s "${data_dir}/regions.tsv" || ! -s "${data_dir}/country/CN.txt" || ! -d "${data_dir}/regions" || ! -s "${data_dir}/asn/presets.tsv" || ! -s "${data_dir}/carriers/home-broadband.txt" || ! -s "${data_dir}/carriers/home-broadband-asns.tsv" ]]; then
     echo "预制 IP 数据不完整：${data_dir}" >&2
     return 1
@@ -882,7 +883,7 @@ cn_render_nft_ip_set_definition() {
   local cidrs="$2"
   local indent="${3:-  }"
   printf '%sset %s {\n' "${indent}" "${set_name}"
-  printf '%s  type ipv4_addr\n' "${indent}"
+  printf '%s  type %s\n' "${indent}" "${4:-ipv4_addr}"
   printf '%s  flags interval\n' "${indent}"
   printf '%s  elements = {\n' "${indent}"
   cn_nft_print_element_list "${cidrs}" "${indent}    "
@@ -1141,8 +1142,9 @@ cn_render_apply_commands_iptables() {
   cn_validate_global_ip_rules "${CN_GLOBAL_IP_RULES}" || return 1
   cn_validate_port_exceptions "${CN_PORT_EXCEPTIONS}" || return 1
 
-  local country_cidrs
+  local country_cidrs country_ipv6_cidrs
   country_cidrs="$(cn_country_gate_cidrs)" || return 1
+  country_ipv6_cidrs="$(cn_country_gate_ipv6_cidrs)" || return 1
   local cidrs cidr
   cidrs="$(cn_collect_allowed_cidrs "${asns}" "$@")" || return 1
   if [[ -z "${cidrs}" ]]; then
@@ -1256,8 +1258,9 @@ cn_render_apply_commands_nft() {
   cn_validate_global_ip_rules "${CN_GLOBAL_IP_RULES}" || return 1
   cn_validate_port_exceptions "${CN_PORT_EXCEPTIONS}" || return 1
 
-  local country_cidrs
+  local country_cidrs country_ipv6_cidrs
   country_cidrs="$(cn_country_gate_cidrs)" || return 1
+  country_ipv6_cidrs="$(cn_country_gate_ipv6_cidrs)" || return 1
   local cidrs iface
   cidrs="$(cn_collect_allowed_cidrs "${asns}" "$@")" || return 1
   if [[ -z "${cidrs}" ]]; then
@@ -1289,6 +1292,9 @@ cn_render_apply_commands_nft() {
   if [[ -n "${CN_ALLOWED_COUNTRIES}" ]]; then
     country_cidrs="$(cn_normalize_ipv4_cidrs_for_nft <<<"${country_cidrs}")"
     cn_render_nft_ip_set_definition country_allowed_v4 "${country_cidrs}" "  "
+  fi
+  if [[ -n "${country_ipv6_cidrs}" ]]; then
+    cn_render_nft_ip_set_definition country_allowed_v6 "${country_ipv6_cidrs}" "  " ipv6_addr
   fi
   cn_for_each_port_policy "${port_policies}" cn_render_nft_port_policy_sets
   cn_render_nft_global_ip_sets
